@@ -15,6 +15,7 @@ const hitStatus = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+let savedToken = false;
 const toastEl = $("#toast");
 let toastTimer = 0;
 let status = null;
@@ -373,6 +374,7 @@ async function loadSettings() {
   const data = await api("/api/settings");
   $("#interval").value = data.interval;
   $("#keyword-interval").value = data.keyword_interval;
+  savedToken = Boolean(data.has_token);
   $("#tg-chat-id").value = data.tg_chat_id || "";
   $("#heartbeat-enabled").checked = data.heartbeat_enabled !== false;
   $("#heartbeat-hour").value = data.heartbeat_hour ?? 9;
@@ -445,6 +447,11 @@ $("#account-form").addEventListener("submit", (event) => {
   });
 });
 
+$("#tg-token").addEventListener("focus", () => {
+  $("#tg-token").readOnly = false;
+  $("#tg-token").dataset.touched = "1";
+});
+
 $("#logout-btn").addEventListener("click", () => withButton($("#logout-btn"), async () => {
   await post("/api/logout");
   location.href = "/login";
@@ -465,9 +472,15 @@ $("#settings-form").addEventListener("submit", (event) => {
       quiet_end: $("#quiet-end").value,
     };
     const cookie = $("#cookie").value.trim();
-    const token = $("#tg-token").value.trim();
+    const tokenInput = $("#tg-token");
+    const token = tokenInput.value.trim();
     if (cookie) payload.cookie = cookie;
-    if (token) payload.tg_token = token;
+    if (tokenInput.dataset.touched === "1" && token) {
+      if (!token.includes(":") && !savedToken) {
+        throw new Error("Bot Token 格式不对，一般是一串数字、冒号，再加一串字符。");
+      }
+      if (token.includes(":")) payload.tg_token = token;
+    }
     await post("/api/settings", payload);
     $("#cookie").value = "";
     $("#tg-token").value = "";

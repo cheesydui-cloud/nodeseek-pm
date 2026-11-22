@@ -445,6 +445,7 @@ def settings_payload(store: Store) -> dict:
 
 
 def update_settings(store: Store, data: dict) -> str | None:
+    interval = None
     if "interval" in data and str(data.get("interval") or "").strip() != "":
         try:
             interval = int(data["interval"])
@@ -452,7 +453,7 @@ def update_settings(store: Store, data: dict) -> str | None:
             return "检查间隔必须是数字"
         if interval < MIN_INTERVAL or interval > MAX_INTERVAL:
             return f"私信检查间隔要在 {MIN_INTERVAL} 到 {MAX_INTERVAL} 秒之间"
-        store.set_setting("interval", str(interval))
+    keyword_interval = None
     if "keyword_interval" in data and str(data.get("keyword_interval") or "").strip() != "":
         try:
             keyword_interval = int(data["keyword_interval"])
@@ -460,6 +461,21 @@ def update_settings(store: Store, data: dict) -> str | None:
             return "关键词检查间隔必须是数字"
         if keyword_interval < MIN_KEYWORD_INTERVAL or keyword_interval > MAX_INTERVAL:
             return f"关键词检查间隔要在 {MIN_KEYWORD_INTERVAL} 到 {MAX_INTERVAL} 秒之间"
+    token_text = str(data.get("tg_token") or "")
+    token = ""
+    ignore_token = False
+    if token_text.strip():
+        token = normalize_token(token_text)
+        if ":" not in token:
+            # 浏览器常把面板密码填进 Token 框。已有 Token 时忽略它，避免保存间隔失败。
+            if store.get_setting("tg_token"):
+                ignore_token = True
+                token = ""
+            else:
+                return "Bot Token 格式不对，一般是一串数字、冒号，再加一串字符。"
+    if interval is not None:
+        store.set_setting("interval", str(interval))
+    if keyword_interval is not None:
         store.set_setting("keyword_interval", str(keyword_interval))
 
     cookie_text = str(data.get("cookie") or "")
@@ -477,13 +493,9 @@ def update_settings(store: Store, data: dict) -> str | None:
         if previous != parsed:
             store.set_state("baseline_done", "0")
 
-    token_text = str(data.get("tg_token") or "")
     if data.get("clear_token") and not token_text.strip():
         store.delete_setting("tg_token")
-    elif token_text.strip():
-        token = normalize_token(token_text)
-        if ":" not in token:
-            return "Bot Token 格式不对，一般是一串数字、冒号，再加一串字符。"
+    elif token and not ignore_token:
         store.set_setting("tg_token", token)
 
     if "tg_chat_id" in data:
