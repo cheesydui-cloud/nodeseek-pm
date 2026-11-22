@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from ns_panel import __version__
 from ns_panel.browser import BrowserClient, auth_mode, browser_is_open, open_login_window, port_open, wait_for_port
 from ns_panel.diff import parse_cookie
-from ns_panel.monitor import Monitor, interval_seconds
+from ns_panel.monitor import MAX_INTERVAL, MIN_INTERVAL, Monitor, interval_seconds
 from ns_panel.nodeseek import AuthError, CloudflareError, NodeSeekClient, NodeSeekError, message_rows
 from ns_panel.posts import (
     BOARDS,
@@ -440,8 +440,8 @@ def update_settings(store: Store, data: dict) -> str | None:
             interval = int(data["interval"])
         except (TypeError, ValueError):
             return "检查间隔必须是数字"
-        if interval < 30 or interval > 3600:
-            return "检查间隔要在 30 到 3600 秒之间"
+        if interval < MIN_INTERVAL or interval > MAX_INTERVAL:
+            return f"检查间隔要在 {MIN_INTERVAL} 到 {MAX_INTERVAL} 秒之间"
         store.set_setting("interval", str(interval))
 
     cookie_text = str(data.get("cookie") or "")

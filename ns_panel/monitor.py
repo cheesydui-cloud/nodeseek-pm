@@ -38,13 +38,17 @@ from ns_panel.store import Store
 from ns_panel.telegram import TelegramError, send_message
 
 
+MIN_INTERVAL = 10
+MAX_INTERVAL = 3600
+
+
 def interval_seconds(store: Store) -> int:
     raw = store.get_setting("interval", "90") or "90"
     try:
         value = int(raw)
     except ValueError:
         value = 90
-    return max(30, min(value, 3600))
+    return max(MIN_INTERVAL, min(value, MAX_INTERVAL))
 
 
 class Monitor:

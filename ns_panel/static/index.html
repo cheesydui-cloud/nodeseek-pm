@@ -286,8 +286,8 @@
           <section class="panel">
             <h2>检查间隔</h2>
             <label for="interval">每隔多少秒检查一次私信、@、回复和关键词</label>
-            <input id="interval" name="interval" type="number" min="30" max="3600" value="90">
-            <p class="muted">最短 30 秒。电脑需要保持开机，这个面板窗口也要留着。</p>
+            <input id="interval" name="interval" type="number" min="10" max="3600" value="90">
+            <p class="muted">最短 10 秒。再短会连续请求 NodeSeek，登录页容易被拦住。</p>
             <p class="muted">Cookie 和 Token 只写在本机 data 目录，不要把那个目录发给别人。</p>
           </section>
 
