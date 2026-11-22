@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>登录 - NodeSeek 私信监控</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="login-brand">
+      <span class="mark">NS</span>
+      <span>
+        <h1>私信监控</h1>
+        <p class="muted">登录这个面板</p>
+      </span>
+    </div>
+    <form id="login-form">
+      <label for="login-user">账号</label>
+      <input id="login-user" name="user" autocomplete="username" required>
+      <label for="login-password">密码</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+      <p id="login-error" class="login-error" hidden></p>
+      <button type="submit" class="primary">登录</button>
+    </form>
+    <p class="muted note">这是面板账号，不是 NodeSeek 论坛账号。登录后可以在设置里改成自己记得住的密码。</p>
+  </main>
+  <script>
+    const form = document.querySelector("#login-form");
+    const error = document.querySelector("#login-error");
+    const button = form.querySelector("button");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      error.hidden = true;
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user: document.querySelector("#login-user").value.trim(),
+            password: document.querySelector("#login-password").value,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) {
+          error.hidden = false;
+          error.textContent = data.error || "登录失败";
+          return;
+        }
+        location.replace("/");
+      } catch (_err) {
+        error.hidden = false;
+        error.textContent = "登录失败";
+      } finally {
+        button.disabled = false;
+      }
+    });
+    document.querySelector("#login-user").focus();
+  </script>
+</body>
+</html>

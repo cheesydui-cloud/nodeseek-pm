@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NodeSeek 私信监控</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="mark">NS</span>
+        <span>
+          <strong>私信监控</strong>
+          <small id="brand-note">本机面板</small>
+        </span>
+      </div>
+      <nav>
+        <button type="button" data-nav="overview" class="active">总览</button>
+        <button type="button" data-nav="messages">私信</button>
+        <button type="button" data-nav="mentions">提到我</button>
+        <button type="button" data-nav="replies">回复我</button>
+        <button type="button" data-nav="keywords">关键词</button>
+        <button type="button" data-nav="settings">设置</button>
+        <button type="button" data-nav="logs">日志</button>
+        <button type="button" id="logout-btn">退出登录</button>
+      </nav>
+      <p id="side-note" class="side-note">只监听这台电脑。关闭运行窗口后，提醒会停。登录用的 Edge 请单独留着。</p>
+    </aside>
+
+    <div class="workspace">
+      <header class="top">
+        <div>
+          <h1 id="page-title">总览</h1>
+          <p id="page-desc">有人发来私信、@你、回复你的帖子，或新帖命中关键词时，推送到 Telegram。</p>
+        </div>
+        <div id="status-pill" class="pill">未运行</div>
+      </header>
+
+      <section class="page active" data-page="overview">
+        <div id="overview-banners"></div>
+        <div class="cards">
+          <article class="card">
+            <span>监控</span>
+            <strong id="card-running">未运行</strong>
+          </article>
+          <article class="card">
+            <span>论坛账号</span>
+            <strong id="card-account">还没识别</strong>
+          </article>
+          <article class="card">
+            <span>上次成功检查</span>
+            <strong id="card-success">还没有</strong>
+          </article>
+          <article class="card">
+            <span>今日推送</span>
+            <strong id="card-pushes">0</strong>
+          </article>
+        </div>
+        <div class="actions">
+          <button type="button" id="start-btn" class="primary">开始监控</button>
+          <button type="button" id="stop-btn">停止</button>
+          <button type="button" id="check-btn">立即检查</button>
+          <span id="next-check" class="muted"></span>
+        </div>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>最近推送</h2>
+          </div>
+          <div id="event-list" class="list"></div>
+        </section>
+      </section>
+
+      <section class="page" data-page="messages">
+        <div class="panel-head">
+          <h2>会话</h2>
+          <button type="button" id="baseline-btn">把当前私信设为基线</button>
+        </div>
+        <p class="muted note">这里是最近一次拉到的会话。程序只读取列表，不会把论坛里的私信标成已读。每个会话只看最后一条，对方发来新内容才会推送。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>对方</th>
+                <th>最后一条</th>
+                <th>时间</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="conversation-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="page" data-page="mentions">
+        <div class="panel-head">
+          <h2>提到我</h2>
+          <button type="button" id="mentions-baseline-btn">把当前@设为基线</button>
+        </div>
+        <p class="muted note">有人在帖子里@你时，会列在这里并推送到 Telegram。只读取列表，不会把论坛里的@标成已读。第一次检查只记住当前记录，不推送历史。</p>
+        <p id="mentions-state" class="muted"></p>
+        <div id="mentions-banners"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>谁</th>
+                <th>帖子</th>
+                <th>时间</th>
+                <th>状态</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="mention-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="page" data-page="replies">
+        <div class="panel-head">
+          <h2>回复我</h2>
+          <button type="button" id="replies-baseline-btn">把当前回复设为基线</button>
+        </div>
+        <p class="muted note">有人回复你的帖子时，会列在这里并推送到 Telegram。只读取列表，不会把论坛里的回复标成已读。第一次检查只记住当前记录，不推送历史。</p>
+        <p id="replies-state" class="muted"></p>
+        <div id="replies-banners"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>谁</th>
+                <th>帖子</th>
+                <th>时间</th>
+                <th>状态</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="reply-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="page" data-page="keywords">
+        <form id="keyword-form" class="stack">
+          <section class="panel">
+            <h2>关键词</h2>
+            <p class="muted note">每行一个，也可以用逗号或分号分隔。标题或正文摘要里出现，就会列出来。词后面可以写 @板块，只在那个板块命中；写 -排除词，这句话里出现排除词就不推。例如：家宽 @交易 -已出</p>
+            <textarea id="keywords" name="keywords" rows="6" spellcheck="false" placeholder="例如：&#10;美西家宽 @交易 -已出 -出掉&#10;人找车 @拼车&#10;白丝 @贴图"></textarea>
+            <label for="excludes">所有关键词都排除</label>
+            <textarea id="excludes" name="excludes" rows="3" spellcheck="false" placeholder="例如：&#10;已出&#10;出掉"></textarea>
+            <h2 class="section-gap">板块</h2>
+            <div id="board-list" class="boards"></div>
+            <p class="muted note">关键词只看公开 RSS，也就是全站最新大约二十条，不再打开板块页面，避免把登录态一起拦住。检查间隔请保持在几分钟内。DeepFlood 是另一个网站，这里不包含它。第一次检索只记住当前帖子，不推送历史。</p>
+            <div class="actions">
+              <button type="submit" class="primary">保存关键词</button>
+              <button type="button" id="scan-posts-btn">立即检索</button>
+              <button type="button" id="posts-baseline-btn">把当前帖子设为基线</button>
+            </div>
+            <p id="posts-state" class="muted"></p>
+          </section>
+        </form>
+        <div id="posts-banners"></div>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>命中的帖子</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>板块</th>
+                  <th>标题</th>
+                  <th>关键词</th>
+                  <th>状态</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="post-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" data-page="settings">
+        <form id="account-form" class="stack">
+          <section class="panel">
+            <h2>面板账号</h2>
+            <p class="muted note">这是打开这个页面时要填的账号。改成自己记得住的密码即可。网页桌面密码不在这里改。</p>
+            <label for="panel-user">账号</label>
+            <input id="panel-user" name="panel_user" autocomplete="username" maxlength="64">
+            <label for="current-password">当前密码</label>
+            <input id="current-password" type="password" autocomplete="current-password">
+            <label for="new-password">新密码</label>
+            <input id="new-password" type="password" autocomplete="new-password">
+            <label for="confirm-password">再输入一次新密码</label>
+            <input id="confirm-password" type="password" autocomplete="new-password">
+            <div class="actions">
+              <button type="submit" class="primary">保存账号</button>
+            </div>
+          </section>
+        </form>
+        <form id="settings-form" class="stack">
+          <div class="actions form-start">
+            <button type="submit" class="primary">保存设置</button>
+          </div>
+          <section class="panel">
+            <h2>登录浏览器</h2>
+            <p id="browser-note" class="muted note">复制出来的 Cookie 和这个程序对不上，Cloudflare 会过一会儿就拦住。点下面的按钮会弹出一个专用 Edge。在那个窗口登录一次，并保持窗口开着。窗口可以最小化，程序会保持页面在线。</p>
+            <p id="docker-desktop-note" class="muted note" hidden>登录浏览器跑在这个容器里。在 1Panel 给本机 6080 端口做反向代理，打开网页桌面，登录 NodeSeek。网页桌面密码是环境变量 VNC_PASSWORD，最多 8 位。容器保持运行，监控就不会停。</p>
+            <p id="browser-state" class="muted"></p>
+            <div class="actions">
+              <button type="button" id="open-browser-btn" class="primary">打开登录浏览器</button>
+              <button type="button" id="test-browser-btn">测试登录窗口</button>
+              <button type="button" id="use-cookie-btn" class="ghost">仍用 Cookie</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>备用：复制 Cookie</h2>
+            <p class="muted note">这种方式容易被拦住。优先用上面的登录浏览器。</p>
+            <ol class="steps">
+              <li>用浏览器登录 <a href="https://www.nodeseek.com" target="_blank" rel="noopener">nodeseek.com</a>。</li>
+              <li>按 F12，打开「网络」，刷新页面。</li>
+              <li>点一条发往 www.nodeseek.com 的请求，在请求标头里复制整段 Cookie。</li>
+              <li>不要用控制台的 document.cookie，登录态通常复制不到。</li>
+            </ol>
+            <label for="cookie">Cookie</label>
+            <textarea id="cookie" name="cookie" rows="6" spellcheck="false" placeholder="在这里粘贴 Cookie"></textarea>
+            <p id="cookie-state" class="muted"></p>
+            <div class="actions">
+              <button type="button" id="test-cookie-btn">测试 Cookie</button>
+              <button type="button" id="clear-cookie-btn" class="ghost">清除已保存的 Cookie</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Telegram</h2>
+            <ol class="steps">
+              <li>在 Telegram 搜索 @BotFather，发送 /newbot，按提示拿到 Token。</li>
+              <li>打开你的机器人，发送 /start。</li>
+              <li>把 Token 填到下面，点「获取 Chat ID」，再保存。</li>
+            </ol>
+            <label for="tg-token">Bot Token</label>
+            <input id="tg-token" name="tg_token" type="password" autocomplete="off" placeholder="123456789:AA...">
+            <p id="token-state" class="muted"></p>
+            <label for="tg-chat-id">Chat ID</label>
+            <input id="tg-chat-id" name="tg_chat_id" type="text" autocomplete="off" placeholder="获取后会填到这里">
+            <div class="actions">
+              <button type="button" id="discover-btn">获取 Chat ID</button>
+              <button type="button" id="test-tg-btn">发送测试消息</button>
+              <button type="button" id="clear-token-btn" class="ghost">清除 Token</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>每天一条存活消息</h2>
+            <p class="muted note">容器停了，它自己发不出故障告警。到了下面的小时还没发过，就发一条“监控还在跑”。这一天没收到，就去看服务器。</p>
+            <label class="checkline" for="heartbeat-enabled">
+              <input id="heartbeat-enabled" name="heartbeat_enabled" type="checkbox" checked>
+              每天发一条
+            </label>
+            <label for="heartbeat-hour">几点发</label>
+            <input id="heartbeat-hour" name="heartbeat_hour" type="number" min="0" max="23" value="9">
+          </section>
+
+          <section class="panel">
+            <h2>关键词免打扰</h2>
+            <p class="muted note">这段时间命中的关键词先记下，结束后再推。私信、@和回复不受影响，仍然马上发。</p>
+            <label class="checkline" for="quiet-enabled">
+              <input id="quiet-enabled" name="quiet_enabled" type="checkbox">
+              开启免打扰
+            </label>
+            <div class="pair">
+              <div>
+                <label for="quiet-start">开始</label>
+                <input id="quiet-start" name="quiet_start" type="time" value="23:00">
+              </div>
+              <div>
+                <label for="quiet-end">结束</label>
+                <input id="quiet-end" name="quiet_end" type="time" value="08:00">
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>检查间隔</h2>
+            <label for="interval">每隔多少秒检查一次私信、@、回复和关键词</label>
+            <input id="interval" name="interval" type="number" min="30" max="3600" value="90">
+            <p class="muted">最短 30 秒。电脑需要保持开机，这个面板窗口也要留着。</p>
+            <p class="muted">Cookie 和 Token 只写在本机 data 目录，不要把那个目录发给别人。</p>
+          </section>
+
+          <div class="actions">
+            <button type="submit" class="primary">保存设置</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="page" data-page="logs">
+        <div class="panel-head">
+          <h2>运行日志</h2>
+          <button type="button" id="reload-logs-btn">刷新</button>
+        </div>
+        <div id="log-list" class="list log-list"></div>
+      </section>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

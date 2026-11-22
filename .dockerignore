@@ -1,0 +1,9 @@
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+data
+browser-data
+.git
+tests
+启动面板.bat

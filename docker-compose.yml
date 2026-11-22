@@ -1,0 +1,26 @@
+# 启动前把 NS_PANEL_PASSWORD 和 VNC_PASSWORD 改成你自己的密码。
+services:
+  nodeseek-pm:
+    build: .
+    image: nodeseek-pm:0.4.0
+    container_name: nodeseek-pm
+    restart: unless-stopped
+    init: true
+    shm_size: 1gb
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      TZ: Asia/Shanghai
+      NS_RUNTIME: docker
+      NS_HOST: 0.0.0.0
+      NS_PORT: "8787"
+      NS_OPEN_BROWSER: "0"
+      NS_PANEL_USER: admin
+      NS_PANEL_PASSWORD: change-me
+      VNC_PASSWORD: change12
+    ports:
+      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - ./data:/app/data
+      - ./browser-data:/browser-data
