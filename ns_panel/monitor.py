@@ -39,16 +39,24 @@ from ns_panel.telegram import TelegramError, send_message
 
 
 MIN_INTERVAL = 10
+MIN_KEYWORD_INTERVAL = 30
 MAX_INTERVAL = 3600
 
 
-def interval_seconds(store: Store) -> int:
-    raw = store.get_setting("interval", "90") or "90"
+def _bounded_interval(raw: str | None, default: int, minimum: int) -> int:
     try:
-        value = int(raw)
+        value = int(raw or "")
     except ValueError:
-        value = 90
-    return max(MIN_INTERVAL, min(value, MAX_INTERVAL))
+        value = default
+    return max(minimum, min(value, MAX_INTERVAL))
+
+
+def interval_seconds(store: Store) -> int:
+    return _bounded_interval(store.get_setting("interval", "90"), 90, MIN_INTERVAL)
+
+
+def keyword_interval_seconds(store: Store) -> int:
+    return _bounded_interval(store.get_setting("keyword_interval", "60"), 60, MIN_KEYWORD_INTERVAL)
 
 
 class Monitor:
@@ -72,6 +80,7 @@ class Monitor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.next_check_at: float | None = None
+        self.next_keyword_at: float | None = None
 
     @property
     def running(self) -> bool:
@@ -132,17 +141,43 @@ class Monitor:
 
     def _loop(self) -> None:
         self.log("info", "监控已启动")
+        next_inbox = 0.0
+        next_keyword = 0.0
         try:
             while not self._stop.is_set():
-                self.check_once(wait=True)
+                now = time.time()
+                if now >= next_inbox:
+                    result = self._safe_call(self._check_inbox)
+                    if not result.get("busy"):
+                        next_inbox = time.time() + interval_seconds(self.store)
+                if now >= next_keyword:
+                    result = self._safe_call(self._scheduled_keywords)
+                    if not result.get("busy"):
+                        next_keyword = time.time() + keyword_interval_seconds(self.store)
                 self._maybe_heartbeat()
-                interval = interval_seconds(self.store)
-                self.next_check_at = time.time() + interval
-                if self._stop.wait(interval):
+                self.next_check_at = next_inbox
+                self.next_keyword_at = next_keyword
+                wait = min(next_inbox, next_keyword) - time.time()
+                if self._stop.wait(0.2 if wait < 0.2 else wait):
                     break
         finally:
             self.next_check_at = None
+            self.next_keyword_at = None
             self.log("info", "监控已停止")
+
+    def _safe_call(self, fn) -> dict:
+        if not self._check_lock.acquire(timeout=0.2):
+            return {"ok": False, "busy": True, "error": "上一次检查还在进行"}
+        try:
+            return fn()
+        except Exception as exc:
+            message = f"检查失败：{exc}"
+            self.store.set_state("last_error", message)
+            self.store.set_state("last_check", _now())
+            self.log("error", message)
+            return {"ok": False, "error": message}
+        finally:
+            self._check_lock.release()
 
     def _check(self) -> dict:
         self.store.set_state("last_check", _now())
@@ -159,23 +194,42 @@ class Monitor:
                 self.store.set_state("last_error", "")
                 self.store.set_state("last_success", _now())
             return post
-
-        cooled = self._cooling_message()
-        if cooled:
-            pm = {"ok": False, "error": cooled}
-        else:
-            pm = self._check_pm(cookie)
-            if pm.get("ok"):
-                pm = self._with_mentions(cookie, pm)
-                pm = self._with_replies(cookie, pm)
+        inbox = self._check_inbox()
         if not rules:
-            return pm
+            return inbox
         try:
             post = self._check_posts(cookie, rules, excludes)
         except Exception as exc:
             post = {"ok": False, "error": f"关键词检查失败：{exc}", "notified": 0}
             self._note_post_error(post["error"])
-        return _combine(pm, post)
+        return _combine(inbox, post)
+
+    def _check_inbox(self) -> dict:
+        self.store.set_state("last_check", _now())
+        cookie = (self.store.get_setting("cookie") or "").strip()
+        use_browser = auth_mode(self.store) == "browser"
+        if not cookie and not use_browser:
+            return {"ok": True, "skipped": True, "notified": 0, "message": "未登录，跳过私信"}
+        cooled = self._cooling_message()
+        if cooled:
+            return {"ok": False, "error": cooled}
+        pm = self._check_pm(cookie)
+        if pm.get("ok"):
+            pm = self._with_mentions(cookie, pm)
+            pm = self._with_replies(cookie, pm)
+        return pm
+
+    def _scheduled_keywords(self) -> dict:
+        rules, excludes = self._keyword_rules()
+        if not rules:
+            return {"ok": True, "skipped": True, "notified": 0}
+        cookie = (self.store.get_setting("cookie") or "").strip()
+        use_browser = auth_mode(self.store) == "browser"
+        post = self._check_posts("" if not cookie and not use_browser else cookie, rules, excludes)
+        if not cookie and not use_browser and post.get("ok"):
+            self.store.set_state("last_error", "")
+            self.store.set_state("last_success", _now())
+        return post
 
     def _check_pm(self, cookie: str) -> dict:
         try:

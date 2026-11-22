@@ -18,7 +18,14 @@ from urllib.parse import parse_qs, urlparse
 from ns_panel import __version__
 from ns_panel.browser import BrowserClient, auth_mode, browser_is_open, open_login_window, port_open, wait_for_port
 from ns_panel.diff import parse_cookie
-from ns_panel.monitor import MAX_INTERVAL, MIN_INTERVAL, Monitor, interval_seconds
+from ns_panel.monitor import (
+    MAX_INTERVAL,
+    MIN_INTERVAL,
+    MIN_KEYWORD_INTERVAL,
+    Monitor,
+    interval_seconds,
+    keyword_interval_seconds,
+)
 from ns_panel.nodeseek import AuthError, CloudflareError, NodeSeekClient, NodeSeekError, message_rows
 from ns_panel.posts import (
     BOARDS,
@@ -410,6 +417,8 @@ def status_payload(app: App) -> dict:
         "replies_last_error": store.get_state("replies_last_error") or "",
         "quiet_active": quiet_active(store),
         "interval": interval_seconds(store),
+        "keyword_interval": keyword_interval_seconds(store),
+        "next_keyword_at": app.monitor.next_keyword_at,
         "login_required": panel_login_required(store),
     }
 
@@ -424,6 +433,7 @@ def settings_payload(store: Store) -> dict:
         "has_token": bool(store.get_setting("tg_token")),
         "tg_chat_id": store.get_setting("tg_chat_id") or "",
         "interval": interval_seconds(store),
+        "keyword_interval": keyword_interval_seconds(store),
         "panel_user": user,
         "has_panel_password": bool(user and secret),
         "heartbeat_enabled": (store.get_setting("heartbeat_enabled", "1") or "1") != "0",
@@ -441,8 +451,16 @@ def update_settings(store: Store, data: dict) -> str | None:
         except (TypeError, ValueError):
             return "检查间隔必须是数字"
         if interval < MIN_INTERVAL or interval > MAX_INTERVAL:
-            return f"检查间隔要在 {MIN_INTERVAL} 到 {MAX_INTERVAL} 秒之间"
+            return f"私信检查间隔要在 {MIN_INTERVAL} 到 {MAX_INTERVAL} 秒之间"
         store.set_setting("interval", str(interval))
+    if "keyword_interval" in data and str(data.get("keyword_interval") or "").strip() != "":
+        try:
+            keyword_interval = int(data["keyword_interval"])
+        except (TypeError, ValueError):
+            return "关键词检查间隔必须是数字"
+        if keyword_interval < MIN_KEYWORD_INTERVAL or keyword_interval > MAX_INTERVAL:
+            return f"关键词检查间隔要在 {MIN_KEYWORD_INTERVAL} 到 {MAX_INTERVAL} 秒之间"
+        store.set_setting("keyword_interval", str(keyword_interval))
 
     cookie_text = str(data.get("cookie") or "")
     if data.get("clear_cookie") and not cookie_text.strip():

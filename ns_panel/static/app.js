@@ -107,7 +107,7 @@ function renderStatus(data) {
   } else {
     pill.textContent = "未运行";
   }
-  $("#card-running").textContent = data.running ? `每 ${data.interval} 秒` : "未运行";
+  $("#card-running").textContent = data.running ? `私信 ${data.interval} 秒，词 ${data.keyword_interval} 秒` : "未运行";
   $("#card-account").textContent = data.self_name || (data.self_id ? `ID ${data.self_id}` : "还没识别");
   $("#card-success").textContent = when(data.last_success);
   $("#card-pushes").textContent = String(data.today_pushes || 0);
@@ -165,9 +165,17 @@ function renderStatus(data) {
   }
   $("#overview-banners").innerHTML = banners.join("");
 
-  if (data.running && data.next_check_at) {
-    const seconds = Math.max(0, Math.round(data.next_check_at - Date.now() / 1000));
-    $("#next-check").textContent = `${seconds} 秒后再次检查`;
+  if (data.running && (data.next_check_at || data.next_keyword_at)) {
+    const parts = [];
+    if (data.next_check_at) {
+      const seconds = Math.max(0, Math.round(data.next_check_at - Date.now() / 1000));
+      parts.push(`私信 ${seconds} 秒后`);
+    }
+    if (data.has_keywords && data.next_keyword_at) {
+      const seconds = Math.max(0, Math.round(data.next_keyword_at - Date.now() / 1000));
+      parts.push(`关键词 ${seconds} 秒后`);
+    }
+    $("#next-check").textContent = parts.join("，");
   } else {
     $("#next-check").textContent = "";
   }
@@ -364,6 +372,7 @@ function selectedBoards() {
 async function loadSettings() {
   const data = await api("/api/settings");
   $("#interval").value = data.interval;
+  $("#keyword-interval").value = data.keyword_interval;
   $("#tg-chat-id").value = data.tg_chat_id || "";
   $("#heartbeat-enabled").checked = data.heartbeat_enabled !== false;
   $("#heartbeat-hour").value = data.heartbeat_hour ?? 9;
@@ -447,6 +456,7 @@ $("#settings-form").addEventListener("submit", (event) => {
   withButton(button, async () => {
     const payload = {
       interval: Number($("#interval").value),
+      keyword_interval: Number($("#keyword-interval").value),
       tg_chat_id: $("#tg-chat-id").value.trim(),
       heartbeat_enabled: $("#heartbeat-enabled").checked,
       heartbeat_hour: Number($("#heartbeat-hour").value),

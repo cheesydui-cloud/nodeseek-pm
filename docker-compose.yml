@@ -2,7 +2,7 @@
 services:
   nodeseek-pm:
     build: .
-    image: nodeseek-pm:0.4.1
+    image: nodeseek-pm:0.5.0
     container_name: nodeseek-pm
     restart: unless-stopped
     init: true

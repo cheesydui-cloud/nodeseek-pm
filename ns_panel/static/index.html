@@ -151,7 +151,7 @@
             <textarea id="excludes" name="excludes" rows="3" spellcheck="false" placeholder="例如：&#10;已出&#10;出掉"></textarea>
             <h2 class="section-gap">板块</h2>
             <div id="board-list" class="boards"></div>
-            <p class="muted note">关键词只看公开 RSS，也就是全站最新大约二十条，不再打开板块页面，避免把登录态一起拦住。检查间隔请保持在几分钟内。DeepFlood 是另一个网站，这里不包含它。第一次检索只记住当前帖子，不推送历史。</p>
+            <p class="muted note">关键词只看公开 RSS，也就是全站最新大约二十条，不再打开板块页面，避免把登录态一起拦住。关键词默认 60 秒查一次，可在设置里单独改。DeepFlood 是另一个网站，这里不包含它。第一次检索只记住当前帖子，不推送历史。</p>
             <div class="actions">
               <button type="submit" class="primary">保存关键词</button>
               <button type="button" id="scan-posts-btn">立即检索</button>
@@ -285,9 +285,12 @@
 
           <section class="panel">
             <h2>检查间隔</h2>
-            <label for="interval">每隔多少秒检查一次私信、@、回复和关键词</label>
+            <label for="interval">私信、@ 和回复，每隔多少秒</label>
             <input id="interval" name="interval" type="number" min="10" max="3600" value="90">
-            <p class="muted">最短 10 秒。再短会连续请求 NodeSeek，登录页容易被拦住。</p>
+            <p class="muted">最短 10 秒。再短会连续请求登录接口，登录页容易被拦住。</p>
+            <label for="keyword-interval">关键词，每隔多少秒</label>
+            <input id="keyword-interval" name="keyword_interval" type="number" min="30" max="3600" value="60">
+            <p class="muted">默认 60 秒，最短 30 秒。关键词只看公开 RSS，不必跟私信一样频繁。</p>
             <p class="muted">Cookie 和 Token 只写在本机 data 目录，不要把那个目录发给别人。</p>
           </section>
 
