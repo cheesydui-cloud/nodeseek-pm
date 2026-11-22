@@ -2,7 +2,7 @@
 services:
   nodeseek-pm:
     build: .
-    image: nodeseek-pm:0.5.1
+    image: nodeseek-pm:0.6.0
     container_name: nodeseek-pm
     restart: unless-stopped
     init: true
@@ -24,3 +24,21 @@ services:
     volumes:
       - ./data:/app/data
       - ./browser-data:/browser-data
+
+  # 面板容器自己挂了就发不出每日存活消息。这个服务在外面看 /health。
+  # 整台机器关机时它也发不出。已有服务器要手写加一次，拉取代码不会改编排文件。
+  nodeseek-watch:
+    build: .
+    image: nodeseek-pm:0.6.0
+    container_name: nodeseek-watch
+    restart: unless-stopped
+    init: true
+    depends_on:
+      - nodeseek-pm
+    environment:
+      TZ: Asia/Shanghai
+      NS_WATCH_URL: http://nodeseek-pm:8787/health
+      NS_DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["python", "-m", "ns_panel.watch"]

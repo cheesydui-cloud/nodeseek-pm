@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ns_panel.diff import preview, strip_html
-from ns_panel.mentions import mention_link
+from ns_panel.mentions import list_rows, mention_link
 
 
 @dataclass(frozen=True)
@@ -87,20 +87,7 @@ def format_reply_alerts(rows: list[dict]) -> str:
 
 
 def _rows(payload):
-    if isinstance(payload, list):
-        return payload
-    if not isinstance(payload, dict):
-        raise ValueError("回复我的接口没有返回对象")
-    for key in ("data", "replys", "replies"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-        if isinstance(value, dict):
-            for inner in ("replys", "replies", "list", "rows", "data"):
-                nested = value.get(inner)
-                if isinstance(nested, list):
-                    return nested
-    raise ValueError("回复我的接口没有返回列表")
+    return list_rows(payload, ("data", "replys", "replies", "replyList"), "回复我的接口")
 
 
 def _int(value) -> int:

@@ -206,17 +206,23 @@ class BrowserClient:
                 return member
         return None
 
-    def get_message_list(self) -> dict:
-        self.ensure_window()
-        return self.get_json("/api/notification/message/list")
+    def get_message_list(self, page: int = 1) -> dict:
+        from ns_panel.pages import notification_path
 
-    def get_mentions(self) -> dict:
         self.ensure_window()
-        return self.get_json("/api/notification/at-me/list")
+        return self.get_json(notification_path("message", page))
 
-    def get_replies(self) -> dict:
+    def get_mentions(self, page: int = 1) -> dict:
+        from ns_panel.pages import notification_path
+
         self.ensure_window()
-        return self.get_json("/api/notification/reply-to-me/list")
+        return self.get_json(notification_path("mention", page))
+
+    def get_replies(self, page: int = 1) -> dict:
+        from ns_panel.pages import notification_path
+
+        self.ensure_window()
+        return self.get_json(notification_path("reply", page))
 
     def resolve_self_id(self, payload) -> int | None:
         return infer_self_id(message_rows(payload))

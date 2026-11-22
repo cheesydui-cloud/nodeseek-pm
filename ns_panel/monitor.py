@@ -10,6 +10,7 @@ from datetime import datetime
 from ns_panel.browser import PORT, BrowserClient, auth_mode, port_open, shared_session, _wake_target
 from ns_panel.diff import (
     format_pushes,
+    is_newer,
     parse_message_list,
     select_notifications,
     self_name_from_rows,
@@ -22,6 +23,7 @@ from ns_panel.nodeseek import (
     NodeSeekClient,
     message_rows,
 )
+from ns_panel.pages import load_pages
 from ns_panel.posts import (
     fetch_board_posts,
     format_post_alerts,
@@ -41,6 +43,9 @@ from ns_panel.telegram import TelegramError, send_message
 MIN_INTERVAL = 10
 MIN_KEYWORD_INTERVAL = 30
 MAX_INTERVAL = 3600
+RSS_GAP_SECONDS = 6 * 3600
+RSS_PULL_OVERLAP = 4
+SUPERVISE_SECONDS = 15
 
 
 def _bounded_interval(raw: str | None, default: int, minimum: int) -> int:
@@ -79,6 +84,8 @@ class Monitor:
         self._life = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._generation = 0
+        self._supervisor: threading.Thread | None = None
         self.next_check_at: float | None = None
         self.next_keyword_at: float | None = None
 
@@ -88,17 +95,41 @@ class Monitor:
 
     def start(self) -> None:
         with self._life:
+            self._start_locked()
+
+    def ensure_started(self) -> None:
+        with self._life:
+            if self.store.get_setting("enabled") != "1":
+                return
             if self.running:
                 return
-            self._stop = threading.Event()
-            self._thread = threading.Thread(
-                target=self._loop, name="nodeseek-poll", daemon=True
+            self.log("info", "监控线程停了，正在重新启动。")
+            self._start_locked()
+
+    def supervise(self) -> None:
+        with self._life:
+            if self._supervisor is not None and self._supervisor.is_alive():
+                return
+            self._supervisor = threading.Thread(
+                target=self._supervise_loop, name="nodeseek-supervise", daemon=True
             )
-            self._thread.start()
-            self._ensure_awake()
+            self._supervisor.start()
+
+    def _start_locked(self) -> None:
+        if self.running:
+            return
+        self._generation += 1
+        generation = self._generation
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._loop, args=(generation,), name="nodeseek-poll", daemon=True
+        )
+        self._thread.start()
+        self._ensure_awake()
 
     def stop(self) -> None:
-        self._stop.set()
+        with self._life:
+            self._stop.set()
 
     def check_once(self, wait: bool = False) -> dict:
         if wait:
@@ -139,7 +170,15 @@ class Monitor:
         self.store.add_log(level, message)
         print(f"[{level}] {message}", flush=True)
 
-    def _loop(self) -> None:
+    def _supervise_loop(self) -> None:
+        while True:
+            time.sleep(SUPERVISE_SECONDS)
+            try:
+                self.ensure_started()
+            except Exception as exc:
+                print(f"[error] 监控线程没有重新启动：{exc}", flush=True)
+
+    def _loop(self, generation: int) -> None:
         self.log("info", "监控已启动")
         next_inbox = 0.0
         next_keyword = 0.0
@@ -153,17 +192,27 @@ class Monitor:
                 if now >= next_keyword:
                     result = self._safe_call(self._scheduled_keywords)
                     if not result.get("busy"):
-                        next_keyword = time.time() + keyword_interval_seconds(self.store)
+                        delay = keyword_interval_seconds(self.store)
+                        if result.get("pull_in"):
+                            delay = MIN_KEYWORD_INTERVAL
+                        next_keyword = time.time() + delay
                 self._maybe_heartbeat()
                 self.next_check_at = next_inbox
                 self.next_keyword_at = next_keyword
                 wait = min(next_inbox, next_keyword) - time.time()
                 if self._stop.wait(0.2 if wait < 0.2 else wait):
                     break
+        except Exception as exc:
+            self.log("error", f"监控线程退出：{exc}")
         finally:
+            if generation != self._generation:
+                return
             self.next_check_at = None
             self.next_keyword_at = None
-            self.log("info", "监控已停止")
+            if self._stop.is_set():
+                self.log("info", "监控已停止")
+            else:
+                self.log("error", "监控线程意外退出")
 
     def _safe_call(self, fn) -> dict:
         if not self._check_lock.acquire(timeout=0.2):
@@ -234,8 +283,8 @@ class Monitor:
     def _check_pm(self, cookie: str) -> dict:
         try:
             client = self._make_client(cookie)
-            payload = client.get_message_list()
-            rows = message_rows(payload)
+            first = client.get_message_list(page=1)
+            rows = message_rows(first)
             account = self._account_if_needed(client)
         except AuthError as exc:
             return self._fail(str(exc), alert=True)
@@ -247,7 +296,7 @@ class Monitor:
 
         self_id = account.member_id if account else _optional_int(self.store.get_state("self_id"))
         if not self_id:
-            self_id = client.resolve_self_id(payload)
+            self_id = client.resolve_self_id(first)
         if not self_id:
             return self._fail("拉到了私信列表，但没能识别当前账号。请更新 Cookie 后再试。", alert=False)
 
@@ -258,16 +307,32 @@ class Monitor:
         if self_name:
             self.store.set_state("self_name", self_name)
 
-        current = parse_message_list(payload, self_id)
         previous = self.store.conversations()
         baseline_done = self.store.get_state("baseline_done") == "1"
+        watermark = self.store.get_state("pm_watermark") or ""
+        if baseline_done and not watermark and previous:
+            watermark = _message_watermark(previous.values())
+            if watermark:
+                self.store.set_state("pm_watermark", watermark)
+        caught, capped = self._catch_up_messages(client, first, self_id, previous, baseline_done)
+        if capped:
+            self._note_catchup_cap("私信")
+        eligible = []
+        silent = []
+        for conv, page in caught:
+            if _silent_history(conv, page, previous, watermark, baseline_done):
+                silent.append(conv)
+            else:
+                eligible.append(conv)
         notify, upserts, created_baseline = select_notifications(
-            previous, current, self_id, baseline_done
+            previous, eligible, self_id, baseline_done
         )
+        upserts.extend(silent)
 
         if created_baseline:
             for item in upserts:
                 self.store.upsert_conversation(item)
+            self._raise_watermark(upserts)
             self.store.set_state("baseline_done", "1")
             self._recover()
             text = f"已建立基线，记住 {len(upserts)} 个会话。这些历史私信不会推送。"
@@ -285,15 +350,19 @@ class Monitor:
                 self.log("error", message)
                 for item in upserts:
                     self.store.upsert_conversation(item)
+                self._raise_watermark(upserts)
                 return {"ok": False, "error": message, "notified": 0}
             for item in notify:
                 self.store.upsert_conversation(item)
+            self._raise_watermark(list(notify) + list(upserts))
             title = notify[0].peer_name if len(notify) == 1 else f"{len(notify)} 条新私信"
             self.store.add_event("push", title, text)
             self.log("info", f"已推送 {len(notify)} 条新私信")
 
         for item in upserts:
             self.store.upsert_conversation(item)
+        if not notify:
+            self._raise_watermark(upserts)
 
         self._recover()
         if notify:
@@ -339,11 +408,19 @@ class Monitor:
 
     def _check_mentions(self, cookie: str) -> dict:
         client = self._make_client(cookie)
-        rows = parse_mentions(client.get_mentions())
+        baseline_done = self.store.get_state("mentions_baseline_done") == "1"
+        rows, capped = load_pages(
+            lambda page: client.get_mentions(page=page),
+            parse_mentions,
+            lambda row: row.mention_id,
+            self.store.seen_mention_ids() if baseline_done else set(),
+            baseline_done,
+        )
+        if capped:
+            self._note_catchup_cap("@")
         self_id = _optional_int(self.store.get_state("self_id"))
         if self_id:
             rows = [row for row in rows if row.commenter_id != self_id]
-        baseline_done = self.store.get_state("mentions_baseline_done") == "1"
         plans = plan_mentions(rows, self.store.seen_mention_ids(), baseline_done)
         for item, push in plans:
             self.store.ensure_mention(item, "pending" if push else "listed")
@@ -411,11 +488,19 @@ class Monitor:
 
     def _check_replies(self, cookie: str) -> dict:
         client = self._make_client(cookie)
-        rows = parse_replies(client.get_replies())
+        baseline_done = self.store.get_state("replies_baseline_done") == "1"
+        rows, capped = load_pages(
+            lambda page: client.get_replies(page=page),
+            parse_replies,
+            lambda row: row.reply_id,
+            self.store.seen_reply_ids() if baseline_done else set(),
+            baseline_done,
+        )
+        if capped:
+            self._note_catchup_cap("回复")
         self_id = _optional_int(self.store.get_state("self_id"))
         if self_id:
             rows = [row for row in rows if row.commenter_id != self_id]
-        baseline_done = self.store.get_state("replies_baseline_done") == "1"
         plans = plan_replies(rows, self.store.seen_reply_ids(), baseline_done)
         for item, push in plans:
             self.store.ensure_reply(item, "pending" if push else "listed")
@@ -465,13 +550,18 @@ class Monitor:
             message = "还没有选择要监控的板块"
             self._note_post_error(message)
             return {"ok": False, "error": message, "notified": 0}
-        posts, errors, fetched = self.feed_fetcher(cookie, scan)
+        fetched_result = self.feed_fetcher(cookie, scan)
+        posts, errors, fetched = fetched_result[0], fetched_result[1], fetched_result[2]
+        window_ids = fetched_result[3] if len(fetched_result) > 3 else None
         allowed = set(scan)
         posts = [post for post in posts if post.category in allowed]
         if not posts and not fetched:
             message = "没能拉到帖子：" + ("；".join(errors[:3]) or "没有返回内容")
             self._note_post_error(message)
             return {"ok": False, "error": message, "notified": 0}
+        pull_in = False
+        if window_ids is not None:
+            pull_in = self._note_rss_window(window_ids)
         if errors:
             self._note_post_error("部分板块没拉到：" + "；".join(errors[:3]))
         else:
@@ -500,7 +590,14 @@ class Monitor:
             text = f"已记住当前帖子。这些历史帖不会推送。当前命中 {hit_count} 条，列在关键词页。"
             self.store.add_event("info", "已建立帖子基线", text)
             self.log("info", text)
-            return {"ok": True, "notified": 0, "message": text, "baseline": True, "posts_baseline": True}
+            return {
+                "ok": True,
+                "notified": 0,
+                "message": text,
+                "baseline": True,
+                "posts_baseline": True,
+                "pull_in": pull_in,
+            }
 
         pending = self.store.pending_hits()
         if pending and self._keywords_quiet():
@@ -508,7 +605,7 @@ class Monitor:
             if self.store.get_state("quiet_hold") != message:
                 self.store.set_state("quiet_hold", message)
                 self.log("info", message)
-            return {"ok": True, "notified": 0, "message": message, "held": len(pending)}
+            return {"ok": True, "notified": 0, "message": message, "held": len(pending), "pull_in": pull_in}
         self.store.delete_state("quiet_hold")
         notified = 0
         if pending:
@@ -530,7 +627,98 @@ class Monitor:
             message = f"已推送 {notified} 篇关键词帖子"
         else:
             message = "检索完成，没有新的关键词帖子"
-        return {"ok": True, "notified": notified, "message": message, "baseline": False, "listed": listed}
+        return {
+            "ok": True,
+            "notified": notified,
+            "message": message,
+            "baseline": False,
+            "listed": listed,
+            "pull_in": pull_in,
+        }
+
+    def _catch_up_messages(self, client, first: dict, self_id: int, previous: dict, baseline_done: bool):
+        pages = [(first, 1)]
+        capped = False
+        if baseline_done and previous:
+            last_sig = _peer_signature(first, self_id)
+            for page in range(2, 6):
+                try:
+                    payload = client.get_message_list(page=page)
+                except (AuthError, CloudflareError, ApiError, ValueError):
+                    break
+                signature = _peer_signature(payload, self_id)
+                if not signature or signature == last_sig:
+                    break
+                pages.append((payload, page))
+                last_sig = signature
+                if set(signature) & set(previous):
+                    break
+                if page == 5:
+                    capped = True
+        best: dict[int, tuple] = {}
+        for payload, page in pages:
+            for conv in parse_message_list(payload, self_id):
+                old = best.get(conv.peer_id)
+                if old is None or is_newer(old[0], conv):
+                    best[conv.peer_id] = (conv, page)
+                elif not is_newer(conv, old[0]) and page < old[1]:
+                    best[conv.peer_id] = (conv, page)
+        return list(best.values()), capped
+
+    def _raise_watermark(self, items) -> None:
+        mark = _message_watermark(items)
+        current = self.store.get_state("pm_watermark") or ""
+        if mark and mark > current:
+            self.store.set_state("pm_watermark", mark)
+
+    def _note_catchup_cap(self, kind: str) -> None:
+        message = f"{kind}列表连续翻了 5 页，还没接到上次见过的记录。更早的可能漏了。"
+        if self.store.get_state("catchup_cap") == message:
+            return
+        self.store.set_state("catchup_cap", message)
+        self.log("error", message)
+
+    def _note_rss_window(self, window_ids) -> bool:
+        current = []
+        for item in window_ids:
+            try:
+                number = int(item)
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                current.append(number)
+        if not current:
+            return False
+        raw = self.store.get_state("rss_window_ids") or ""
+        previous = {int(part) for part in raw.split(",") if part.strip().isdigit()}
+        self.store.set_state("rss_window_ids", ",".join(str(item) for item in current))
+        if not previous:
+            return False
+        overlap = previous & set(current)
+        if not overlap:
+            self._alert_rss_gap()
+        return len(overlap) <= RSS_PULL_OVERLAP
+
+    def _alert_rss_gap(self) -> None:
+        now = time.time()
+        try:
+            last = float(self.store.get_state("rss_gap_alert_at") or "0")
+        except ValueError:
+            last = 0.0
+        if now - last < RSS_GAP_SECONDS:
+            return
+        self.store.set_state("rss_gap_alert_at", str(now))
+        message = (
+            "公开帖子列表整页换新了，中间的帖子可能没被看到。"
+            "关键词间隔可以调到 30 秒。公开源每次只有最新约 20 篇，不能按板块往下翻。"
+        )
+        self.log("error", message)
+        try:
+            self._send("NodeSeek 关键词监控\n" + message)
+        except TelegramError as exc:
+            self.log("error", f"关键词漏报提醒没有发出去：{exc}")
+            return
+        self.store.add_event("alert", "关键词可能漏了", message)
 
     def _make_client(self, cookie: str):
         if auth_mode(self.store) == "browser":
@@ -739,6 +927,24 @@ def _combine(pm: dict, post: dict) -> dict:
         base = merged.get("message") or ""
         merged["message"] = f"{base} {post_message}".strip()
     return merged
+
+
+def _peer_signature(payload, self_id: int) -> tuple[int, ...]:
+    return tuple(item.peer_id for item in parse_message_list(payload, self_id))
+
+
+def _message_watermark(items) -> str:
+    times = [item.created_at for item in items if getattr(item, "created_at", "")]
+    return max(times) if times else ""
+
+
+def _silent_history(conv, page: int, previous: dict, watermark: str, baseline_done: bool) -> bool:
+    """第 2 页及以后、上次没见过、时间不新于水位的会话是历史，不推送。"""
+    if not baseline_done or page <= 1 or conv.peer_id in previous:
+        return False
+    if not watermark or not conv.created_at:
+        return True
+    return conv.created_at <= watermark
 
 
 def _optional_int(value: str | None) -> int | None:

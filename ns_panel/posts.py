@@ -346,19 +346,23 @@ def format_post_alerts(rows: list[dict]) -> str:
     return text
 
 
-def fetch_board_posts(cookie: str, boards: list[str]) -> tuple[list[Post], list[str], list[str]]:
-    """只读公开 RSS。板块页面在 Cloudflare 后面，连续打开会把登录态一起拦住。"""
+def fetch_board_posts(cookie: str, boards: list[str]) -> tuple[list[Post], list[str], list[str], list[int]]:
+    """只读公开 RSS。板块页面在 Cloudflare 后面，连续打开会把登录态一起拦住。
+
+    第四项是整份公开列表的帖子编号，用来发现整页换新。公开源不按板块翻页。
+    """
     del cookie
     if not boards:
-        return [], ["没有选择板块"], []
+        return [], ["没有选择板块"], [], []
     allowed = set(boards)
     try:
         xml_text = _fetch_rss()
-        posts = [post for post in parse_rss(xml_text) if post.category in allowed]
+        all_posts = parse_rss(xml_text)
+        posts = [post for post in all_posts if post.category in allowed]
     except Exception as exc:
-        return [], [f"RSS：{exc}"], []
+        return [], [f"RSS：{exc}"], [], []
     fetched = sorted({post.category for post in posts})
-    return posts, [], fetched
+    return posts, [], fetched, [post.post_id for post in all_posts]
 
 
 def _fetch_rss() -> str:

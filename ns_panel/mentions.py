@@ -34,12 +34,28 @@ def mention_link(post_id: int, floor_id: int) -> str:
     return f"https://www.nodeseek.com/post-{post}-{page}#{floor}"
 
 
-def parse_mentions(payload) -> list[Mention]:
+def list_rows(payload, keys: tuple[str, ...], label: str) -> list:
+    if isinstance(payload, list):
+        return payload
     if not isinstance(payload, dict):
-        raise ValueError("提到我的接口没有返回对象")
-    rows = payload.get("data")
-    if not isinstance(rows, list):
-        raise ValueError("提到我的接口没有返回列表")
+        raise ValueError(f"{label}没有返回对象")
+    nodes = [payload]
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nodes.append(value)
+    for node in nodes:
+        for key in keys + ("list", "rows", "msgArray"):
+            nested = node.get(key)
+            if isinstance(nested, list):
+                return nested
+    raise ValueError(f"{label}没有返回列表")
+
+
+def parse_mentions(payload) -> list[Mention]:
+    rows = list_rows(payload, ("data", "atList"), "提到我的接口")
     found: list[Mention] = []
     seen: set[int] = set()
     for row in rows:

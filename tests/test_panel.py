@@ -27,7 +27,10 @@ from datetime import datetime
 from ns_panel.posts import Post, parse_category_html, parse_keyword_rules, parse_keywords, parse_rss, plan_posts
 from ns_panel.replies import format_reply_alerts, parse_replies
 from ns_panel.schedule import heartbeat_due, in_quiet_hours
+from ns_panel.nodeseek import NodeSeekClient
+from ns_panel.pages import notification_path
 from ns_panel.server import App, create_httpd, panel_authorized
+from ns_panel.watch import watch_once
 from ns_panel.store import Store
 
 
@@ -154,22 +157,40 @@ class FakeClient:
             raise self.box["error"]
         return self.box.get("account")
 
-    def get_message_list(self):
+    def get_message_list(self, page=1):
         self.box["list_calls"] = self.box.get("list_calls", 0) + 1
-        if self.box.get("list_error"):
+        self.box.setdefault("message_pages", []).append(page)
+        if self.box.get("list_error") and page == 1:
             raise self.box["list_error"]
+        pages = self.box.get("message_payloads")
+        if isinstance(pages, dict):
+            return pages.get(page, {"success": True, "msgArray": []})
+        if page > 1:
+            return {"success": True, "msgArray": []}
         return self.box["payload"]
 
-    def get_mentions(self):
+    def get_mentions(self, page=1):
         self.box["mention_calls"] = self.box.get("mention_calls", 0) + 1
-        if self.box.get("mention_error"):
+        self.box.setdefault("mention_pages", []).append(page)
+        if self.box.get("mention_error") and page == 1:
             raise self.box["mention_error"]
+        pages = self.box.get("mention_payloads")
+        if isinstance(pages, dict):
+            return pages.get(page, {"success": True, "data": []})
+        if page > 1:
+            return {"success": True, "data": []}
         return self.box.get("mentions", {"success": True, "data": []})
 
-    def get_replies(self):
+    def get_replies(self, page=1):
         self.box["reply_calls"] = self.box.get("reply_calls", 0) + 1
-        if self.box.get("reply_error"):
+        self.box.setdefault("reply_pages", []).append(page)
+        if self.box.get("reply_error") and page == 1:
             raise self.box["reply_error"]
+        pages = self.box.get("reply_payloads")
+        if isinstance(pages, dict):
+            return pages.get(page, {"success": True, "data": []})
+        if page > 1:
+            return {"success": True, "data": []}
         return self.box.get("replies", {"success": True, "data": []})
 
     def resolve_self_id(self, _payload):
@@ -221,6 +242,8 @@ class MentionParseTest(unittest.TestCase):
         self.assertEqual(rows[0].commenter_name, "hunlun")
         self.assertEqual(rows[0].title, "标题")
         self.assertEqual(rows[0].link, "https://www.nodeseek.com/post-100-1#3")
+        listed = parse_mentions({"atList": [mention_row(11, title="另一条")]})
+        self.assertEqual(listed[0].mention_id, 11)
 
     def test_plan_pushes_only_newer_unseen_ids(self):
         old, newer, older = parse_mentions(
@@ -455,6 +478,85 @@ class MonitorTest(unittest.TestCase):
         self.assertNotIn("token", self.sent[0][2])
         self.monitor._maybe_heartbeat()
         self.assertEqual(len(self.sent), 1)
+
+    def test_baseline_reads_only_first_page(self):
+        self.box["mention_payloads"] = {
+            1: {"data": [mention_row(10, title="当前")]},
+            2: {"data": [mention_row(1, title="更早的历史")]},
+        }
+        self.box["reply_payloads"] = {
+            1: {"data": [mention_row(10, title="当前回复")]},
+            2: {"data": [mention_row(1, title="更早的回复")]},
+        }
+        self.box["message_payloads"] = {
+            1: PAYLOAD,
+            2: {"msgArray": [message(4, "old", 9, "me", "历史", "2026-11-01 01:00:00", 10, 0)]},
+        }
+        first = self.monitor.check_once(wait=True)
+        self.assertTrue(first["baseline"])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.box["message_pages"], [1])
+        self.assertEqual(self.box["mention_pages"], [1])
+        self.assertEqual(self.box["reply_pages"], [1])
+        self.assertNotIn(1, self.store.seen_mention_ids())
+
+    def test_mention_on_later_page_is_pushed_without_history(self):
+        self.box["mentions"] = {"data": [mention_row(10, title="旧帖")]}
+        self.monitor.check_once(wait=True)
+        self.box["mention_pages"].clear()
+        self.box["mention_payloads"] = {
+            1: {"data": [mention_row(40, title="最新")]},
+            2: {"data": [mention_row(30, name="alice", title="被挤下去的新@"), mention_row(10, title="旧帖")]},
+            3: {"data": [mention_row(1, title="历史")]},
+        }
+        second = self.monitor.check_once(wait=True)
+        self.assertEqual(self.box["mention_pages"], [1, 2])
+        self.assertEqual(second.get("mentions_notified"), 2)
+        text = "\n".join(item[2] for item in self.sent)
+        self.assertIn("最新", text)
+        self.assertIn("被挤下去的新@", text)
+        self.assertNotIn("历史", text)
+        self.assertNotIn("markViewed", text)
+
+    def test_old_private_message_on_later_page_is_not_pushed(self):
+        self.monitor.check_once(wait=True)
+        self.assertEqual(self.sent, [])
+        watermark = self.store.get_state("pm_watermark")
+        self.assertTrue(watermark)
+        self.box["message_pages"].clear()
+        self.box["message_payloads"] = {
+            1: {"msgArray": [message(8, "new", 9, "me", "刚来的", "2026-11-08 18:00:00", 200, 0)]},
+            2: {
+                "msgArray": [
+                    message(2, "hunlun", 9, "me", "还是那条", "2026-11-08 09:32:09", 100, 0),
+                    message(4, "old", 9, "me", "更早的历史", "2026-11-01 01:00:00", 10, 0),
+                    message(6, "late", 9, "me", "挡住之后才看到", "2026-11-08 17:00:00", 180, 0),
+                ]
+            },
+        }
+        second = self.monitor.check_once(wait=True)
+        self.assertEqual(second["notified"], 2)
+        text = "\n".join(item[2] for item in self.sent)
+        self.assertIn("刚来的", text)
+        self.assertIn("挡住之后才看到", text)
+        self.assertNotIn("更早的历史", text)
+        self.assertEqual(self.box["message_pages"], [1, 2])
+
+    def test_dead_poll_thread_restarts_only_while_enabled(self):
+        self.store.set_setting("enabled", "1")
+        self.monitor.start()
+        self.assertTrue(self.monitor.running)
+        self.monitor.stop()
+        self.monitor._thread.join(timeout=2)
+        self.assertFalse(self.monitor.running)
+        self.store.set_setting("enabled", "0")
+        self.monitor.ensure_started()
+        self.assertFalse(self.monitor.running)
+        self.store.set_setting("enabled", "1")
+        self.monitor.ensure_started()
+        self.assertTrue(self.monitor.running)
+        self.monitor.stop()
+        self.monitor._thread.join(timeout=2)
 
 
 class RuntimeTest(unittest.TestCase):
@@ -775,6 +877,28 @@ class KeywordMonitorTest(unittest.TestCase):
         self.assertIn("HTTP 503", result["posts_error"])
         self.assertEqual(self.sent, [])
 
+    def test_rss_window_rollover_alerts_once_and_overlap_pulls_in(self):
+        def feed(_cookie, _boards):
+            return list(self.box["posts"]), [], list(self.box["fetched"]), list(self.box.get("window") or [])
+
+        self.monitor.feed_fetcher = feed
+        self.box["window"] = [1, 2, 3]
+        self.monitor.scan_posts()
+        self.box["window"] = [3, 4, 5]
+        overlapped = self.monitor.scan_posts()
+        self.assertTrue(overlapped["pull_in"])
+        self.assertEqual(self.sent, [])
+
+        self.box["window"] = [10, 11, 12]
+        self.box["posts"] = [make_post(21, "新出 VPS")]
+        self.monitor.scan_posts()
+        gap = [text for _token, _chat, text in self.sent if "整页换新" in text]
+        self.assertEqual(len(gap), 1)
+        self.assertNotIn("1:token", gap[0])
+        self.monitor.scan_posts()
+        gap = [text for _token, _chat, text in self.sent if "整页换新" in text]
+        self.assertEqual(len(gap), 1)
+
 
 class LoginTest(unittest.TestCase):
     def setUp(self):
@@ -808,6 +932,17 @@ class LoginTest(unittest.TestCase):
             return exc.code, exc.read().decode("utf-8"), exc.headers
 
     def test_login_page_and_account_change(self):
+        self.app.store.set_setting("tg_token", "123:secret-token")
+        self.app.store.set_setting("cookie", "session=hidden-cookie")
+        status, body, _headers = self.open("/health")
+        self.assertEqual(status, 200)
+        health = json.loads(body)
+        self.assertEqual(health["ok"], True)
+        self.assertEqual(set(health), {"ok", "version", "running"})
+        self.assertNotIn("secret-token", body)
+        self.assertNotIn("hidden-cookie", body)
+        self.assertNotIn("secret-pass", body)
+
         status, body, headers = self.open("/")
         self.assertEqual(status, 200)
         self.assertIn("登录这个面板", body)
@@ -860,6 +995,92 @@ class LoginTest(unittest.TestCase):
         status, _body, headers = self.open("/api/login", {"user": "jaking", "password": "easy-one"})
         self.assertEqual(status, 200)
         self.assertIn("ns_session=", headers.get("Set-Cookie") or "")
+
+
+class CatchUpPathTest(unittest.TestCase):
+    def test_paths_stay_on_list_endpoints(self):
+        self.assertEqual(notification_path("mention", 1), "/api/notification/at-me/list")
+        self.assertEqual(notification_path("mention", 2), "/api/notification/at-me/list?page=2")
+        self.assertEqual(notification_path("reply", 3), "/api/notification/reply-to-me/list?page=3")
+        self.assertEqual(notification_path("message", 2), "/api/notification/message/list?page=2")
+        self.assertNotIn("markViewed", notification_path("mention", 4))
+
+        class Recording(NodeSeekClient):
+            def __init__(self):
+                super().__init__("a=b")
+                self.paths = []
+
+            def get_json(self, path):
+                self.paths.append(path)
+                return {"data": []}
+
+        client = Recording()
+        client.get_mentions(2)
+        client.get_replies(1)
+        client.get_message_list(3)
+        self.assertEqual(
+            client.paths,
+            [
+                "/api/notification/at-me/list?page=2",
+                "/api/notification/reply-to-me/list",
+                "/api/notification/message/list?page=3",
+            ],
+        )
+        self.assertFalse(any("markViewed" in path for path in client.paths))
+
+
+class WatchTest(unittest.TestCase):
+    def test_down_alert_is_sent_once_and_hides_token(self):
+        tmp = tempfile.TemporaryDirectory()
+        store = Store(Path(tmp.name) / "panel.db")
+        store.set_setting("tg_token", "123:secret-token")
+        store.set_setting("tg_chat_id", "99")
+        store.set_setting("enabled", "1")
+        sent = []
+        logs = []
+
+        def opener(_request, timeout=5):
+            del timeout
+            raise urllib.error.URLError("down")
+
+        def sender(token, chat_id, text):
+            sent.append((token, chat_id, text))
+
+        state = {"fails": 0, "thread_fails": 0, "alert": ""}
+        for _ in range(3):
+            watch_once(store.path, "http://panel/health", state, opener, sender, logs.append, fails_needed=3)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("没有响应", sent[0][2])
+        self.assertNotIn("secret-token", sent[0][2])
+        self.assertNotIn("secret-token", "\n".join(logs))
+        watch_once(store.path, "http://panel/health", state, opener, sender, logs.append, fails_needed=3)
+        self.assertEqual(len(sent), 1)
+
+        class Response:
+            status = 200
+
+            def read(self, _limit=4000):
+                return b'{"ok": true, "version": "0.6.0", "running": true}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        recovered = watch_once(
+            store.path,
+            "http://panel/health",
+            state,
+            lambda _request, timeout=5: Response(),
+            sender,
+            logs.append,
+            fails_needed=3,
+        )
+        self.assertEqual(recovered["alert"], "")
+        self.assertIn("已恢复", sent[1][2])
+        self.assertNotIn("secret-token", sent[1][2])
+        tmp.cleanup()
 
 
 if __name__ == "__main__":

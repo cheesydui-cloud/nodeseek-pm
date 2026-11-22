@@ -47,7 +47,7 @@ STATIC = Path(__file__).resolve().parent / "static"
 HOST = "127.0.0.1"
 SESSION_COOKIE = "ns_session"
 SESSION_SECONDS = 14 * 24 * 3600
-PUBLIC_GET = {"/login", "/static/app.css"}
+PUBLIC_GET = {"/login", "/static/app.css", "/health"}
 PUBLIC_POST = {"/api/login"}
 
 
@@ -61,6 +61,7 @@ class App:
         self.session_lock = threading.Lock()
         if self.store.get_setting("enabled") == "1":
             self.monitor.start()
+        self.monitor.supervise()
 
     def issue_session(self) -> str:
         token = secrets.token_urlsafe(32)
@@ -168,6 +169,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/static/app.js":
                 self._file("app.js", "text/javascript; charset=utf-8")
+                return
+            if path == "/health":
+                self._json(200, health_payload(self.server.app))
                 return
             if path == "/api/status":
                 self._json(200, status_payload(self.server.app))
@@ -383,6 +387,10 @@ class Handler(BaseHTTPRequestHandler):
     def _fail(self, exc: Exception) -> None:
         traceback.print_exc()
         self._json(500, {"ok": False, "error": str(exc) or "面板内部错误"})
+
+
+def health_payload(app: App) -> dict:
+    return {"ok": True, "version": __version__, "running": app.monitor.running}
 
 
 def status_payload(app: App) -> dict:
