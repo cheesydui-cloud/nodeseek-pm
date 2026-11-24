@@ -651,6 +651,28 @@ class MonitorTest(unittest.TestCase):
         self.assertIsNone(answer_for("随便说", self.store, False))
         self.assertEqual(answer_for("回复", self.store, True)["text"], "还没有回复。")
 
+    def test_telegram_can_add_replace_and_delete_keywords(self):
+        added = answer_for("加 美西家宽 @交易 -已出", self.store, False)
+        self.assertIn("已加上：美西家宽 @交易 -已出", added["text"])
+        self.assertIn("不会补推", added["text"])
+        self.assertEqual(self.store.get_setting("keywords"), "美西家宽 @交易 -已出")
+        replaced = answer_for("添加 美西家宽 @拼车 -已出", self.store, False)
+        self.assertIn("已修改：美西家宽 @拼车 -已出", replaced["text"])
+        self.assertNotIn("@交易", self.store.get_setting("keywords"))
+        missing = answer_for("删 没有的词", self.store, False)
+        self.assertIn("没有这个关键词", missing["text"])
+        self.assertIn("美西家宽", self.store.get_setting("keywords"))
+        removed = answer_for("删除 美西家宽", self.store, False)
+        self.assertIn("已删掉：美西家宽", removed["text"])
+        self.assertEqual(self.store.get_setting("keywords"), "")
+        bad = answer_for("加 家宽 @火星", self.store, False)
+        self.assertIn("没有这个板块", bad["text"])
+        self.assertEqual(self.store.get_setting("keywords"), "")
+        self.store.set_setting("keywords", "\n".join(f"词{i}" for i in range(40)))
+        full = answer_for("加 再来一个", self.store, False)
+        self.assertIn("最多 40 个", full["text"])
+        self.assertEqual(len(self.store.get_setting("keywords").splitlines()), 40)
+
     def test_dead_poll_thread_restarts_only_while_enabled(self):
         self.store.set_setting("enabled", "1")
         self.monitor.start()

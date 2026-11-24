@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from ns_panel.diff import preview, talk_link
-from ns_panel.posts import board_name
+from ns_panel.posts import (
+    board_name,
+    format_keyword_rules,
+    parse_keyword_rule,
+    parse_keyword_rules,
+    validate_keywords,
+)
 
 
 OWNER_HINT = "点下面的按钮查看记录。"
 FOREIGN_TEXT = "这个机器人不对外。"
-HELLO = "按钮已放在输入框上方。点私信、提到我、回复、关键词或状态。"
+HELLO = "按钮已放在输入框上方。点私信、提到我、回复、关键词或状态。改词表请发送：词表、加 词、删 词。"
 
 _COMMANDS = {
     "/start": "start",
@@ -66,9 +72,12 @@ def titled_open_links(rows, name_key: str = "title") -> list[tuple[str, str]]:
 
 def answer_for(text: str, store, running: bool) -> dict | None:
     command = _COMMANDS.get((text or "").strip())
-    if command is None:
+    edited = None if command is not None else _edit_keywords(text, store)
+    if command is None and edited is None:
         return None
-    if command == "start":
+    if edited is not None:
+        body = edited
+    elif command == "start":
         body = HELLO
     elif command == "pm":
         body = _pm_text(store)
@@ -144,8 +153,9 @@ def _reply_text(store) -> str:
 
 def _keyword_text(store) -> str:
     rows = _latest_last(store.list_hits(8))
+    hint = "改词表请发送：词表、加 词、删 词"
     if not rows:
-        return "还没有关键词帖。"
+        return "还没有关键词帖。\n" + hint
     lines = ["最近关键词"]
     for row in rows:
         lines.extend(
@@ -156,7 +166,84 @@ def _keyword_text(store) -> str:
                 f"打开：{row.get('link') or ''}",
             ]
         )
+    lines.extend(["", hint])
     return "\n".join(lines)
+
+
+def _edit_keywords(text: str, store) -> str | None:
+    action, rest = _split_keyword_edit(text)
+    if not action:
+        return None
+    if action == "list":
+        return _rules_text(store)
+    if action == "add":
+        return _add_keyword(rest, store)
+    return _delete_keyword(rest, store)
+
+
+def _split_keyword_edit(text: str) -> tuple[str, str]:
+    raw = (text or "").strip()
+    for prefix, action in (("添加", "add"), ("删除", "delete"), ("词表", "list"), ("加", "add"), ("删", "delete")):
+        if raw == prefix:
+            return action, ""
+        if raw.startswith(prefix) and raw[len(prefix) : len(prefix) + 1].isspace():
+            return action, raw[len(prefix) :].strip()
+    return "", ""
+
+
+def _rules_text(store) -> str:
+    rules = parse_keyword_rules(store.get_setting("keywords") or "")
+    if not rules:
+        return "还没有关键词。\n例如：加 美西家宽 @交易 -已出"
+    lines = ["当前词表：", *format_keyword_rules(rules).splitlines(), "", "加 词 @板块 -排除词", "删 词"]
+    return "\n".join(lines)
+
+
+def _add_keyword(rest: str, store) -> str:
+    if not rest:
+        return "加上哪个词？例如：加 美西家宽 @交易 -已出"
+    try:
+        rule = parse_keyword_rule(rest)
+    except ValueError as exc:
+        return str(exc)
+    rules = parse_keyword_rules(store.get_setting("keywords") or "")
+    key = rule.word.casefold()
+    replaced = any(item.word.casefold() == key for item in rules)
+    updated = [rule if item.word.casefold() == key else item for item in rules]
+    if not replaced:
+        updated.append(rule)
+    error = _save_rules(store, updated)
+    if error:
+        return error
+    verb = "修改" if replaced else "加上"
+    store.add_log("info", f"已从 Telegram {verb}关键词：{rule.word}")
+    shown = format_keyword_rules([rule])
+    return f"已{verb}：{shown}\n已经见过的帖不会补推。\n\n{_rules_text(store)}"
+
+
+def _delete_keyword(rest: str, store) -> str:
+    word = rest.strip()
+    if not word:
+        return "删掉哪个词？例如：删 美西家宽"
+    rules = parse_keyword_rules(store.get_setting("keywords") or "")
+    key = word.casefold()
+    kept = [item for item in rules if item.word.casefold() != key]
+    if len(kept) == len(rules):
+        return f"没有这个关键词：{word}"
+    error = _save_rules(store, kept)
+    if error:
+        return error
+    store.add_log("info", f"已从 Telegram 删掉关键词：{word}")
+    return f"已删掉：{word}\n\n{_rules_text(store)}"
+
+
+def _save_rules(store, rules) -> str | None:
+    text = format_keyword_rules(rules)
+    error = validate_keywords(text)
+    if error:
+        return error
+    store.set_setting("keywords", text)
+    return None
 
 
 def _status_text(store, running: bool) -> str:

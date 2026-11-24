@@ -66,6 +66,13 @@ def parse_keywords(text: str) -> list[str]:
     return [rule.word for rule in parse_keyword_rules(text)]
 
 
+def parse_keyword_rule(text: str) -> KeywordRule:
+    rule = _rule_from_chunk(text or "")
+    if rule is None:
+        raise ValueError("没有写关键词。例如：家宽 @交易 -已出")
+    return rule
+
+
 def parse_keyword_rules(text: str) -> list[KeywordRule]:
     found: list[KeywordRule] = []
     seen: set[str] = set()
