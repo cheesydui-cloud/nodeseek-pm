@@ -19,6 +19,7 @@ from ns_panel.diff import (
     self_id_from_thread,
     strip_html,
 )
+from ns_panel.botview import answer_for, open_markup, pm_open_links
 from ns_panel.monitor import Monitor, alert_hint
 from ns_panel.browser import SessionDown, auth_mode, find_edge, login_asleep_message, run_with_retry
 from ns_panel.nodeseek import AuthError, CloudflareError, looks_like_challenge
@@ -254,6 +255,10 @@ class MentionParseTest(unittest.TestCase):
         second = plan_mentions([old, newer, older], {10}, True)
         pushed = [item.mention_id for item, push in second if push]
         self.assertEqual(pushed, [20])
+        caught_up = plan_mentions([older, newer], {10, 100}, True, since=10)
+        self.assertEqual([item.mention_id for item, push in caught_up if push], [20])
+        blocked = plan_mentions([newer], {10, 100}, True)
+        self.assertEqual([item.mention_id for item, push in blocked if push], [])
 
     def test_alert_text_has_link_and_no_markup(self):
         text = format_mention_alerts(
@@ -540,7 +545,107 @@ class MonitorTest(unittest.TestCase):
         self.assertIn("刚来的", text)
         self.assertIn("挡住之后才看到", text)
         self.assertNotIn("更早的历史", text)
-        self.assertEqual(self.box["message_pages"], [1, 2])
+        self.assertEqual(self.box["message_pages"], [1, 2, 3])
+
+    def test_known_peer_on_later_page_is_still_pushed(self):
+        self.monitor.check_once(wait=True)
+        self.box["message_pages"].clear()
+        self.box["message_payloads"] = {
+            1: {"msgArray": [message(2, "hunlun", 9, "me", "第一页的新私信", "2026-11-08 18:00:00", 210, 0)]},
+            2: {"msgArray": [message(3, "kagent93", 9, "me", "挤到第二页", "2026-11-08 17:00:00", 190, 0)]},
+            3: {"msgArray": [message(4, "old", 9, "me", "旧的", "2026-11-01 01:00:00", 10, 0)]},
+        }
+        second = self.monitor.check_once(wait=True)
+        self.assertEqual(self.box["message_pages"], [1, 2, 3])
+        text = "\n".join(item[2] for item in self.sent)
+        self.assertIn("第一页的新私信", text)
+        self.assertIn("挤到第二页", text)
+        self.assertNotIn("旧的", text)
+        self.assertEqual(second["notified"], 2)
+        markup = open_markup(pm_open_links([
+            {"peer_id": 2, "peer_name": "hunlun"},
+            {"peer_id": 3, "peer_name": "kagent93"},
+        ]))
+        self.assertIn("nodeseek.com", markup["inline_keyboard"][0][0]["url"])
+
+    def test_unfinished_private_message_catchup_keeps_watermark_and_resumes(self):
+        self.monitor.check_once(wait=True)
+        watermark = self.store.get_state("pm_watermark")
+        self.box["message_pages"].clear()
+        payloads = {}
+        for page in range(1, 6):
+            payloads[page] = {
+                "msgArray": [message(20 + page, f"p{page}", 9, "me", f"第{page}页", "2026-11-08 12:00:00", 300 + page, 0)]
+            }
+        payloads[6] = {
+            "msgArray": [message(40, "late", 9, "me", "第六页才看到", "2026-11-08 11:30:00", 280, 0)]
+        }
+        payloads[7] = {"msgArray": [message(4, "old", 9, "me", "旧的", "2026-11-01 01:00:00", 10, 0)]}
+        self.box["message_payloads"] = payloads
+        self.monitor.check_once(wait=True)
+        self.assertEqual(self.store.get_state("pm_watermark"), watermark)
+        self.assertEqual(self.store.get_state("pm_resume_page"), "6")
+        self.assertEqual(self.box["message_pages"], [1, 2, 3, 4, 5])
+        self.box["message_pages"].clear()
+        self.sent.clear()
+        self.monitor.check_once(wait=True)
+        text = "\n".join(item[2] for item in self.sent)
+        self.assertIn("第六页才看到", text)
+        self.assertIsNone(self.store.get_state("pm_resume_page"))
+        self.assertGreater(self.store.get_state("pm_watermark"), watermark)
+
+    def test_mention_catchup_resumes_until_old_id(self):
+        self.box["mentions"] = {"data": [mention_row(10, title="旧帖")]}
+        self.monitor.check_once(wait=True)
+        self.box["mention_pages"].clear()
+        self.sent.clear()
+        payloads = {page: {"data": [mention_row(100 + page, title=f"新{page}")]} for page in range(1, 6)}
+        payloads[6] = {"data": [mention_row(50, name="alice", title="补上的"), mention_row(10, title="旧帖")]}
+        self.box["mention_payloads"] = payloads
+        first = self.monitor.check_once(wait=True)
+        self.assertEqual(first.get("mentions_notified"), 5)
+        self.assertEqual(self.store.get_state("mentions_resume_page"), "6")
+        self.assertEqual(self.store.get_state("mentions_sync_until"), "10")
+        self.box["mention_pages"].clear()
+        self.sent.clear()
+        second = self.monitor.check_once(wait=True)
+        self.assertEqual(self.box["mention_pages"], [1, 6])
+        self.assertEqual(second.get("mentions_notified"), 1)
+        self.assertIn("补上的", self.sent[0][2])
+        self.assertIsNone(self.store.get_state("mentions_resume_page"))
+
+    def test_reply_catchup_resumes_until_old_id(self):
+        self.box["replies"] = {"replys": [mention_row(10, title="旧帖")]}
+        self.monitor.check_once(wait=True)
+        self.box["reply_pages"].clear()
+        self.sent.clear()
+        payloads = {page: {"data": [mention_row(100 + page, title=f"新{page}")]} for page in range(1, 6)}
+        payloads[6] = {"data": [mention_row(50, name="alice", title="补上的回复"), mention_row(10, title="旧帖")]}
+        self.box["reply_payloads"] = payloads
+        first = self.monitor.check_once(wait=True)
+        self.assertEqual(first.get("replies_notified"), 5)
+        self.assertEqual(self.store.get_state("replies_resume_page"), "6")
+        self.box["reply_pages"].clear()
+        self.sent.clear()
+        second = self.monitor.check_once(wait=True)
+        self.assertEqual(self.box["reply_pages"], [1, 6])
+        self.assertEqual(second.get("replies_notified"), 1)
+        self.assertIn("补上的回复", self.sent[0][2])
+        self.assertIsNone(self.store.get_state("replies_resume_page"))
+
+    def test_telegram_buttons_read_local_rows_and_hide_secrets(self):
+        self.store.upsert_conversation(
+            parse_message_list(PAYLOAD, 9)[0]
+        )
+        self.store.set_state("last_error", "Cookie session=abc123 失效")
+        view = answer_for("私信", self.store, False)
+        self.assertIn("hunlun", view["text"])
+        self.assertIn("https://www.nodeseek.com/notification", view["text"])
+        self.assertEqual(view["reply_markup"]["keyboard"][0][0]["text"], "私信")
+        self.assertEqual(answer_for("状态", self.store, False)["text"].count("session=abc123"), 0)
+        self.assertIn("没在跑", answer_for("状态", self.store, False)["text"])
+        self.assertIsNone(answer_for("随便说", self.store, False))
+        self.assertEqual(answer_for("回复", self.store, True)["text"], "还没有回复。")
 
     def test_dead_poll_thread_restarts_only_while_enabled(self):
         self.store.set_setting("enabled", "1")

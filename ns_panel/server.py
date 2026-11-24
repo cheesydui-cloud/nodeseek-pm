@@ -40,6 +40,7 @@ from ns_panel.posts import (
 )
 from ns_panel.schedule import in_quiet_hours, valid_hhmm
 from ns_panel.store import Store
+from ns_panel.botview import reply_keyboard
 from ns_panel.telegram import TelegramError, discover_chat_id, send_message
 
 
@@ -562,7 +563,12 @@ def test_cookie(store: Store, data: dict) -> dict:
 
 def test_telegram(store: Store, data: dict) -> dict:
     token, chat_id = _telegram_pair(store, data)
-    send_message(token, chat_id, "NodeSeek 私信监控：这是一条测试消息。收到就说明 Telegram 已接通。")
+    send_message(
+        token,
+        chat_id,
+        "NodeSeek 私信监控：这是一条测试消息。收到就说明 Telegram 已接通。",
+        reply_keyboard(),
+    )
     return {"ok": True, "message": "测试消息已发送，请看 Telegram。"}
 
 
@@ -571,7 +577,7 @@ def discover(store: Store, data: dict) -> dict:
     token = normalize_token(token_text) if token_text else (store.get_setting("tg_token") or "")
     if not token:
         raise TelegramError("请先填写 Bot Token")
-    chat_id = discover_chat_id(token)
+    chat_id = discover_chat_id(token, store.get_state("tg_last_chat_id") or "")
     return {"ok": True, "tg_chat_id": chat_id, "message": f"找到 Chat ID：{chat_id}"}
 
 
@@ -873,6 +879,7 @@ def serve(root: Path | None = None, open_browser: bool = True) -> None:
         print("关闭这个窗口就会停止监控。", flush=True)
     if open_browser:
         webbrowser.open(f"http://{shown}:{port}")
+    app.monitor.listen()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

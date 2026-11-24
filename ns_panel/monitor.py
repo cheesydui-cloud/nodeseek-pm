@@ -7,6 +7,15 @@ import threading
 import time
 from datetime import datetime
 
+from ns_panel.botview import (
+    FOREIGN_TEXT,
+    HELLO,
+    answer_for,
+    open_markup,
+    pm_open_links,
+    reply_keyboard,
+    titled_open_links,
+)
 from ns_panel.browser import PORT, BrowserClient, auth_mode, port_open, shared_session, _wake_target
 from ns_panel.diff import (
     format_pushes,
@@ -23,7 +32,7 @@ from ns_panel.nodeseek import (
     NodeSeekClient,
     message_rows,
 )
-from ns_panel.pages import load_pages
+from ns_panel.pages import load_pages, round_pages
 from ns_panel.posts import (
     fetch_board_posts,
     format_post_alerts,
@@ -37,7 +46,7 @@ from ns_panel.posts import (
 from ns_panel.replies import format_reply_alerts, parse_replies, plan_replies
 from ns_panel.schedule import heartbeat_due, in_quiet_hours
 from ns_panel.store import Store
-from ns_panel.telegram import TelegramError, send_message
+from ns_panel.telegram import TelegramError, get_updates, send_message
 
 
 MIN_INTERVAL = 10
@@ -86,6 +95,9 @@ class Monitor:
         self._thread: threading.Thread | None = None
         self._generation = 0
         self._supervisor: threading.Thread | None = None
+        self._listener: threading.Thread | None = None
+        self._listen_stop = threading.Event()
+        self._pm_catchup_done = True
         self.next_check_at: float | None = None
         self.next_keyword_at: float | None = None
 
@@ -127,9 +139,20 @@ class Monitor:
         self._thread.start()
         self._ensure_awake()
 
+    def listen(self) -> None:
+        with self._life:
+            if self._listener is not None and self._listener.is_alive():
+                return
+            self._listen_stop = threading.Event()
+            self._listener = threading.Thread(
+                target=self._listen_loop, name="nodeseek-telegram", daemon=True
+            )
+            self._listener.start()
+
     def stop(self) -> None:
         with self._life:
             self._stop.set()
+            self._listen_stop.set()
 
     def check_once(self, wait: bool = False) -> dict:
         if wait:
@@ -314,8 +337,10 @@ class Monitor:
             watermark = _message_watermark(previous.values())
             if watermark:
                 self.store.set_state("pm_watermark", watermark)
-        caught, capped = self._catch_up_messages(client, first, self_id, previous, baseline_done)
-        if capped:
+        caught, self._pm_catchup_done = self._catch_up_messages(
+            client, first, self_id, previous, baseline_done, watermark
+        )
+        if not self._pm_catchup_done:
             self._note_catchup_cap("私信")
         eligible = []
         silent = []
@@ -343,7 +368,7 @@ class Monitor:
         if notify:
             text = format_pushes(notify)
             try:
-                self._send(text)
+                self._send(text, open_markup(pm_open_links(notify)))
             except TelegramError as exc:
                 message = f"私信已拉到，但 Telegram 发送失败：{exc}"
                 self.store.set_state("last_error", message)
@@ -409,19 +434,20 @@ class Monitor:
     def _check_mentions(self, cookie: str) -> dict:
         client = self._make_client(cookie)
         baseline_done = self.store.get_state("mentions_baseline_done") == "1"
-        rows, capped = load_pages(
+        since = _optional_int(self.store.get_state("mentions_sync_until")) or 0
+        rows = self._load_notice(
+            "mentions",
             lambda page: client.get_mentions(page=page),
             parse_mentions,
             lambda row: row.mention_id,
             self.store.seen_mention_ids() if baseline_done else set(),
             baseline_done,
+            "@",
         )
-        if capped:
-            self._note_catchup_cap("@")
         self_id = _optional_int(self.store.get_state("self_id"))
         if self_id:
             rows = [row for row in rows if row.commenter_id != self_id]
-        plans = plan_mentions(rows, self.store.seen_mention_ids(), baseline_done)
+        plans = plan_mentions(rows, self.store.seen_mention_ids(), baseline_done, since)
         for item, push in plans:
             self.store.ensure_mention(item, "pending" if push else "listed")
         self.store.set_state("mentions_last_error", "")
@@ -439,7 +465,7 @@ class Monitor:
             return {"ok": True, "notified": 0, "message": "检查完成，没有新的@"}
         text = format_mention_alerts(pending)
         try:
-            self._send(text)
+            self._send(text, open_markup(titled_open_links(pending, "commenter_name")))
         except TelegramError as exc:
             message = f"@已找到，但 Telegram 发送失败：{exc}"
             self._note_mention_error(message)
@@ -489,19 +515,20 @@ class Monitor:
     def _check_replies(self, cookie: str) -> dict:
         client = self._make_client(cookie)
         baseline_done = self.store.get_state("replies_baseline_done") == "1"
-        rows, capped = load_pages(
+        since = _optional_int(self.store.get_state("replies_sync_until")) or 0
+        rows = self._load_notice(
+            "replies",
             lambda page: client.get_replies(page=page),
             parse_replies,
             lambda row: row.reply_id,
             self.store.seen_reply_ids() if baseline_done else set(),
             baseline_done,
+            "回复",
         )
-        if capped:
-            self._note_catchup_cap("回复")
         self_id = _optional_int(self.store.get_state("self_id"))
         if self_id:
             rows = [row for row in rows if row.commenter_id != self_id]
-        plans = plan_replies(rows, self.store.seen_reply_ids(), baseline_done)
+        plans = plan_replies(rows, self.store.seen_reply_ids(), baseline_done, since)
         for item, push in plans:
             self.store.ensure_reply(item, "pending" if push else "listed")
         self.store.set_state("replies_last_error", "")
@@ -519,7 +546,7 @@ class Monitor:
             return {"ok": True, "notified": 0, "message": "检查完成，没有新的回复"}
         text = format_reply_alerts(pending)
         try:
-            self._send(text)
+            self._send(text, open_markup(titled_open_links(pending, "commenter_name")))
         except TelegramError as exc:
             message = f"回复已找到，但 Telegram 发送失败：{exc}"
             self._note_reply_error(message)
@@ -611,7 +638,7 @@ class Monitor:
         if pending:
             text = format_post_alerts(pending)
             try:
-                self._send(text)
+                self._send(text, open_markup(titled_open_links(pending, "title")))
             except TelegramError as exc:
                 message = f"关键词帖子已找到，但 Telegram 发送失败：{exc}"
                 self._note_post_error(message)
@@ -636,25 +663,54 @@ class Monitor:
             "pull_in": pull_in,
         }
 
-    def _catch_up_messages(self, client, first: dict, self_id: int, previous: dict, baseline_done: bool):
+    def _catch_up_messages(
+        self, client, first: dict, self_id: int, previous: dict, baseline_done: bool, watermark: str
+    ):
+        del previous
+        first_rows = [(conv, 1) for conv in parse_message_list(first, self_id)]
+        if not baseline_done:
+            self.store.delete_state("pm_resume_page")
+            return first_rows, True
+        if not watermark:
+            self.store.delete_state("pm_resume_page")
+            return first_rows, True
+        resume = _optional_int(self.store.get_state("pm_resume_page")) or 1
         pages = [(first, 1)]
-        capped = False
-        if baseline_done and previous:
+        finished = _pm_page_old(parse_message_list(first, self_id), watermark)
+        next_page = 1 if finished else 2
+        if not finished:
             last_sig = _peer_signature(first, self_id)
-            for page in range(2, 6):
+            planned = [page for page in round_pages(resume, 5) if page > 1]
+            for page in planned:
                 try:
                     payload = client.get_message_list(page=page)
                 except (AuthError, CloudflareError, ApiError, ValueError):
+                    finished = False
+                    next_page = page
                     break
                 signature = _peer_signature(payload, self_id)
-                if not signature or signature == last_sig:
+                if not signature:
+                    finished = True
+                    next_page = 1
+                    break
+                if signature == last_sig:
+                    finished = False
+                    next_page = page
                     break
                 pages.append((payload, page))
                 last_sig = signature
-                if set(signature) & set(previous):
+                if _pm_page_old(parse_message_list(payload, self_id), watermark):
+                    finished = True
+                    next_page = 1
                     break
-                if page == 5:
-                    capped = True
+                next_page = page + 1
+            else:
+                if planned:
+                    finished = False
+        if finished:
+            self.store.delete_state("pm_resume_page")
+        else:
+            self.store.set_state("pm_resume_page", str(max(next_page, 2)))
         best: dict[int, tuple] = {}
         for payload, page in pages:
             for conv in parse_message_list(payload, self_id):
@@ -663,16 +719,45 @@ class Monitor:
                     best[conv.peer_id] = (conv, page)
                 elif not is_newer(conv, old[0]) and page < old[1]:
                     best[conv.peer_id] = (conv, page)
-        return list(best.values()), capped
+        return list(best.values()), finished
+
+    def _load_notice(self, kind: str, fetch, parse, identity, seen_ids: set[int], baseline_done: bool, label: str):
+        resume_key = f"{kind}_resume_page"
+        until_key = f"{kind}_sync_until"
+        resume = _optional_int(self.store.get_state(resume_key)) or 1
+        sync_until = _optional_int(self.store.get_state(until_key)) or 0
+        if not baseline_done:
+            resume = 1
+            sync_until = 0
+        rows, finished, next_page = load_pages(
+            fetch,
+            parse,
+            identity,
+            seen_ids,
+            baseline_done,
+            resume_page=resume,
+            sync_until=sync_until,
+        )
+        if not baseline_done or finished:
+            self.store.delete_state(resume_key)
+            self.store.delete_state(until_key)
+        else:
+            if not self.store.get_state(until_key):
+                self.store.set_state(until_key, str(max(seen_ids) if seen_ids else 0))
+            self.store.set_state(resume_key, str(max(next_page, 2)))
+            self._note_catchup_cap(label)
+        return rows
 
     def _raise_watermark(self, items) -> None:
+        if not self._pm_catchup_done:
+            return
         mark = _message_watermark(items)
         current = self.store.get_state("pm_watermark") or ""
         if mark and mark > current:
             self.store.set_state("pm_watermark", mark)
 
     def _note_catchup_cap(self, kind: str) -> None:
-        message = f"{kind}列表连续翻了 5 页，还没接到上次见过的记录。更早的可能漏了。"
+        message = f"{kind}列表这一轮翻了 5 页，还没接到上次的记录。下一轮会接着翻。"
         if self.store.get_state("catchup_cap") == message:
             return
         self.store.set_state("catchup_cap", message)
@@ -803,12 +888,92 @@ class Monitor:
         self.store.set_state("posts_last_error", message)
         self.log("error", message)
 
-    def _send(self, text: str) -> None:
+    def _send(self, text: str, reply_markup: dict | None = None) -> None:
         token = (self.store.get_setting("tg_token") or "").strip()
         chat_id = (self.store.get_setting("tg_chat_id") or "").strip()
         if not token or not chat_id:
             raise TelegramError("还没有配置 Telegram Bot Token 或 Chat ID")
-        self.sender(token, chat_id, text)
+        if reply_markup is None:
+            self.sender(token, chat_id, text)
+            return
+        try:
+            self.sender(token, chat_id, text, reply_markup)
+        except TypeError:
+            self.sender(token, chat_id, text)
+
+    def _listen_loop(self) -> None:
+        while not self._listen_stop.is_set():
+            try:
+                self._listen_once()
+            except Exception:
+                self._note_listen_error()
+                self._listen_stop.wait(5)
+
+    def _listen_once(self) -> None:
+        token = (self.store.get_setting("tg_token") or "").strip()
+        chat_id = (self.store.get_setting("tg_chat_id") or "").strip()
+        if not token or not chat_id:
+            self._listen_stop.wait(5)
+            return
+        if self.store.get_state("tg_keyboard_for") != chat_id:
+            try:
+                self._send(HELLO, reply_keyboard())
+            except TelegramError:
+                self._note_listen_error()
+                self._listen_stop.wait(15)
+                return
+            self.store.set_state("tg_keyboard_for", chat_id)
+            self.store.delete_state("tg_listen_error")
+        offset = _optional_int(self.store.get_state("tg_update_offset")) or 0
+        try:
+            updates = get_updates(token, offset)
+        except TelegramError:
+            self._note_listen_error()
+            self._listen_stop.wait(5)
+            return
+        self.store.delete_state("tg_listen_error")
+        for update in updates:
+            update_id = update.get("update_id") if isinstance(update, dict) else None
+            self._handle_telegram(update, token, chat_id)
+            if isinstance(update_id, int):
+                self.store.set_state("tg_update_offset", str(update_id + 1))
+
+    def _handle_telegram(self, update, token: str, owner_chat_id: str) -> None:
+        if not isinstance(update, dict):
+            return
+        message = update.get("message") or {}
+        chat = message.get("chat") if isinstance(message, dict) else {}
+        if not isinstance(chat, dict):
+            return
+        incoming = str(chat.get("id") or "")
+        if not incoming:
+            return
+        text = str(message.get("text") or "").strip()
+        if chat.get("type") == "private" and (incoming == owner_chat_id or text == "/start" or text.startswith("/start ")):
+            self.store.set_state("tg_last_chat_id", incoming)
+        if incoming != owner_chat_id:
+            if chat.get("type") == "private":
+                try:
+                    self.sender(token, incoming, FOREIGN_TEXT)
+                except TelegramError:
+                    self._note_listen_error()
+            return
+        answer = answer_for(text, self.store, self.running)
+        if answer is None:
+            return
+        try:
+            self.sender(token, owner_chat_id, answer["text"], answer.get("reply_markup"))
+        except TypeError:
+            self.sender(token, owner_chat_id, answer["text"])
+        except TelegramError:
+            self._note_listen_error()
+
+    def _note_listen_error(self) -> None:
+        message = "Telegram 按钮没有连上。"
+        if self.store.get_state("tg_listen_error") == message:
+            return
+        self.store.set_state("tg_listen_error", message)
+        self.log("error", message)
 
     def _fail(self, message: str, alert: bool) -> dict:
         changed = self.store.get_state("last_error") != message
@@ -931,6 +1096,12 @@ def _combine(pm: dict, post: dict) -> dict:
 
 def _peer_signature(payload, self_id: int) -> tuple[int, ...]:
     return tuple(item.peer_id for item in parse_message_list(payload, self_id))
+
+
+def _pm_page_old(conversations, watermark: str) -> bool:
+    if not conversations or not watermark:
+        return not conversations
+    return all((not item.created_at) or item.created_at <= watermark for item in conversations)
 
 
 def _message_watermark(items) -> str:

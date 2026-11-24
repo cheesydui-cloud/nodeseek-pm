@@ -84,11 +84,13 @@ def plan_mentions(
     rows: list[Mention],
     seen_ids: set[int],
     baseline_done: bool,
+    since: int = 0,
 ) -> list[tuple[Mention, bool]]:
-    max_seen = max(seen_ids) if seen_ids else 0
+    # 补漏时 since 是停机前见过的最大 id。后面几页可能比第 1 页旧，但仍比 since 新。
+    floor = since if since > 0 else (max(seen_ids) if seen_ids else 0)
     plans: list[tuple[Mention, bool]] = []
     for row in rows:
-        push = baseline_done and row.mention_id not in seen_ids and row.mention_id > max_seen
+        push = baseline_done and row.mention_id not in seen_ids and row.mention_id > floor
         plans.append((row, push))
     return plans
 

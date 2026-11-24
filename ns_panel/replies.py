@@ -55,11 +55,12 @@ def plan_replies(
     rows: list[Reply],
     seen_ids: set[int],
     baseline_done: bool,
+    since: int = 0,
 ) -> list[tuple[Reply, bool]]:
-    max_seen = max(seen_ids) if seen_ids else 0
+    floor = since if since > 0 else (max(seen_ids) if seen_ids else 0)
     plans: list[tuple[Reply, bool]] = []
     for row in rows:
-        push = baseline_done and row.reply_id not in seen_ids and row.reply_id > max_seen
+        push = baseline_done and row.reply_id not in seen_ids and row.reply_id > floor
         plans.append((row, push))
     return plans
 
