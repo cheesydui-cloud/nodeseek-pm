@@ -26,14 +26,23 @@ _COMMANDS = {
 }
 
 
+KEYBOARD_MARK = "2"
+
+
+def keyboard_seen(chat_id: str) -> str:
+    return f"{chat_id}:{KEYBOARD_MARK}"
+
+
 def reply_keyboard() -> dict:
     return {
         "keyboard": [
-            [{"text": "私信"}, {"text": "提到我"}, {"text": "回复"}],
-            [{"text": "关键词"}, {"text": "状态"}],
+            [{"text": "私信", "style": "primary"}, {"text": "提到我"}],
+            [{"text": "回复"}, {"text": "关键词"}],
+            [{"text": "状态"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
+        "input_field_placeholder": "点按钮查看记录",
     }
 
 

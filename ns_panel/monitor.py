@@ -13,6 +13,7 @@ from ns_panel.botview import (
     answer_for,
     open_markup,
     pm_open_links,
+    keyboard_seen,
     reply_keyboard,
     titled_open_links,
 )
@@ -915,14 +916,14 @@ class Monitor:
         if not token or not chat_id:
             self._listen_stop.wait(5)
             return
-        if self.store.get_state("tg_keyboard_for") != chat_id:
+        if self.store.get_state("tg_keyboard_for") != keyboard_seen(chat_id):
             try:
                 self._send(HELLO, reply_keyboard())
             except TelegramError:
                 self._note_listen_error()
                 self._listen_stop.wait(15)
                 return
-            self.store.set_state("tg_keyboard_for", chat_id)
+            self.store.set_state("tg_keyboard_for", keyboard_seen(chat_id))
             self.store.delete_state("tg_listen_error")
         offset = _optional_int(self.store.get_state("tg_update_offset")) or 0
         try:
