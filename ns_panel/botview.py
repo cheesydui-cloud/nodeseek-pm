@@ -83,8 +83,13 @@ def answer_for(text: str, store, running: bool) -> dict | None:
     return {"text": _scrub(body, store), "reply_markup": reply_keyboard()}
 
 
+def _latest_last(rows):
+    """Telegram 打开长消息时停在底部，最新一条放最后。"""
+    return list(reversed(list(rows)))
+
+
 def _pm_text(store) -> str:
-    rows = store.list_conversations()[:8]
+    rows = _latest_last(store.list_conversations()[:8])
     if not rows:
         return "还没有私信。"
     lines = ["最近私信"]
@@ -102,7 +107,7 @@ def _pm_text(store) -> str:
 
 
 def _mention_text(store) -> str:
-    rows = store.list_mentions(8)
+    rows = _latest_last(store.list_mentions(8))
     if not rows:
         return "还没有提到我。"
     lines = ["最近提到我"]
@@ -120,7 +125,7 @@ def _mention_text(store) -> str:
 
 
 def _reply_text(store) -> str:
-    rows = store.list_replies(8)
+    rows = _latest_last(store.list_replies(8))
     if not rows:
         return "还没有回复。"
     lines = ["最近回复"]
@@ -138,7 +143,7 @@ def _reply_text(store) -> str:
 
 
 def _keyword_text(store) -> str:
-    rows = store.list_hits(8)
+    rows = _latest_last(store.list_hits(8))
     if not rows:
         return "还没有关键词帖。"
     lines = ["最近关键词"]

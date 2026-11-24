@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ns_panel.mentions import format_mention_alerts, mention_link, parse_mentions, plan_mentions
 from ns_panel.diff import (
+    Conversation,
     extract_member,
     format_pushes,
     infer_self_id,
@@ -637,9 +638,12 @@ class MonitorTest(unittest.TestCase):
         self.store.upsert_conversation(
             parse_message_list(PAYLOAD, 9)[0]
         )
+        self.store.upsert_conversation(
+            Conversation(4, "newerpeer", "刚到的", "2026-11-24 18:00:00", 900, 4, 9, 0)
+        )
         self.store.set_state("last_error", "Cookie session=abc123 失效")
         view = answer_for("私信", self.store, False)
-        self.assertIn("hunlun", view["text"])
+        self.assertLess(view["text"].find("hunlun"), view["text"].find("newerpeer"))
         self.assertIn("https://www.nodeseek.com/notification", view["text"])
         self.assertEqual(view["reply_markup"]["keyboard"][0][0]["text"], "私信")
         self.assertEqual(answer_for("状态", self.store, False)["text"].count("session=abc123"), 0)
