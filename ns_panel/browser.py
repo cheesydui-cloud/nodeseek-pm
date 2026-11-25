@@ -231,14 +231,22 @@ class BrowserClient:
         status, content_type, text = self._fetch(path)
         return read_api(status, content_type, text, BROWSER_BLOCKED, BROWSER_AUTH)
 
-    def _fetch(self, path: str) -> tuple[int, str, str]:
+    def post_json(self, path: str):
+        self.ensure_window()
+        status, content_type, text = self._fetch(path, method="POST")
+        return read_api(status, content_type, text, BROWSER_BLOCKED, BROWSER_AUTH)
+
+    def check_in(self) -> dict:
+        return self.post_json("/api/attendance?random=false")
+
+    def _fetch(self, path: str, method: str = "GET") -> tuple[int, str, str]:
         expression = (
             "(async () => {"
             "const ctrl = new AbortController();"
             "const timer = setTimeout(() => ctrl.abort(), 8000);"
             "try {"
             f"const res = await fetch({json.dumps(path)}, "
-            "{credentials: 'include', signal: ctrl.signal, "
+            f"{{method: {json.dumps(method)}, credentials: 'include', signal: ctrl.signal, "
             "headers: {'Accept': 'application/json, text/plain, */*'}});"
             "const text = await res.text();"
             "return JSON.stringify({status: res.status, type: res.headers.get('content-type') || '', "

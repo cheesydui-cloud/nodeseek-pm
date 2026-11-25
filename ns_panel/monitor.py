@@ -31,6 +31,7 @@ from ns_panel.nodeseek import (
     AuthError,
     CloudflareError,
     NodeSeekClient,
+    describe_checkin,
     message_rows,
 )
 from ns_panel.pages import load_pages, round_pages
@@ -221,6 +222,7 @@ class Monitor:
                             delay = MIN_KEYWORD_INTERVAL
                         next_keyword = time.time() + delay
                 self._maybe_heartbeat()
+                self._maybe_checkin()
                 self.next_check_at = next_inbox
                 self.next_keyword_at = next_keyword
                 wait = min(next_inbox, next_keyword) - time.time()
@@ -882,6 +884,60 @@ class Monitor:
         self.store.set_state("heartbeat_day", now.date().isoformat())
         self.store.add_event("info", "监控还在跑", text)
         self.log("info", "已发送每日存活消息")
+
+    def _maybe_checkin(self) -> None:
+        if (self.store.get_setting("checkin_enabled", "1") or "1") == "0":
+            return
+        today = self.clock().date().isoformat()
+        if self.store.get_state("checkin_day") == today:
+            return
+        raw = self.store.get_state("checkin_retry_at") or ""
+        try:
+            if time.time() < float(raw):
+                return
+        except ValueError:
+            pass
+        if self._cooling_message():
+            return
+        if not self._check_lock.acquire(timeout=0):
+            return
+        try:
+            self._checkin_once(today)
+        finally:
+            self._check_lock.release()
+
+    def _checkin_once(self, today: str) -> None:
+        cookie = (self.store.get_setting("cookie") or "").strip()
+        use_browser = auth_mode(self.store) == "browser"
+        if not cookie and not use_browser:
+            self._note_checkin("还没有登录，今天的签到先跳过。")
+            return
+        try:
+            payload = self._make_client(cookie).check_in()
+        except (AuthError, CloudflareError, ApiError, ValueError) as exc:
+            self._note_checkin(str(exc))
+            return
+        done, text = describe_checkin(payload)
+        if not done:
+            self._note_checkin(text)
+            return
+        self.store.set_state("checkin_day", today)
+        self.store.delete_state("checkin_retry_at")
+        self.store.set_state("checkin_result", text[:200])
+        self.store.delete_state("checkin_last_error")
+        self.store.add_event("info", "每日签到", text)
+        self.log("info", f"每日签到：{text}")
+        try:
+            self._send("NodeSeek 签到\n" + text)
+        except TelegramError as exc:
+            self.log("error", f"签到结果没有发出去：{exc}")
+
+    def _note_checkin(self, message: str) -> None:
+        self.store.set_state("checkin_retry_at", str(time.time() + 1800))
+        if self.store.get_state("checkin_last_error") == message:
+            return
+        self.store.set_state("checkin_last_error", message)
+        self.log("error", f"签到还没完成：{message}")
 
     def _note_post_error(self, message: str) -> None:
         if self.store.get_state("posts_last_error") == message:

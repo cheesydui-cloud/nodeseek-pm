@@ -445,6 +445,7 @@ def settings_payload(store: Store) -> dict:
         "keyword_interval": keyword_interval_seconds(store),
         "panel_user": user,
         "has_panel_password": bool(user and secret),
+        "checkin_enabled": (store.get_setting("checkin_enabled", "1") or "1") != "0",
         "heartbeat_enabled": (store.get_setting("heartbeat_enabled", "1") or "1") != "0",
         "heartbeat_hour": _heartbeat_hour(store),
         "quiet_enabled": (store.get_setting("quiet_enabled") or "0") == "1",
@@ -511,6 +512,8 @@ def update_settings(store: Store, data: dict) -> str | None:
         chat_id = str(data.get("tg_chat_id") or "").strip()
         if chat_id:
             store.set_setting("tg_chat_id", chat_id)
+    if "checkin_enabled" in data:
+        store.set_setting("checkin_enabled", "1" if data.get("checkin_enabled") else "0")
     if "heartbeat_enabled" in data:
         store.set_setting("heartbeat_enabled", "1" if data.get("heartbeat_enabled") else "0")
     if "heartbeat_hour" in data and str(data.get("heartbeat_hour") or "").strip() != "":

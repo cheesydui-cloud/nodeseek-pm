@@ -254,6 +254,15 @@
           </section>
 
           <section class="panel">
+            <h2>每天自动签到</h2>
+            <p class="muted note">监控开着时，用当前登录签一次固定奖励，不走随机鸡腿。同一天只签一次。已经签过就记下来。失败会过半小时再试，不影响私信检查。</p>
+            <label class="checkline" for="checkin-enabled">
+              <input id="checkin-enabled" name="checkin_enabled" type="checkbox" checked>
+              每天自动签到
+            </label>
+          </section>
+
+          <section class="panel">
             <h2>每天一条存活消息</h2>
             <p class="muted note">容器停了，它自己发不出故障告警。到了下面的小时还没发过，就发一条“监控还在跑”。这一天没收到，就去看服务器。</p>
             <label class="checkline" for="heartbeat-enabled">

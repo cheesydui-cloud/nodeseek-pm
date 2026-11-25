@@ -376,6 +376,7 @@ async function loadSettings() {
   $("#keyword-interval").value = data.keyword_interval;
   savedToken = Boolean(data.has_token);
   $("#tg-chat-id").value = data.tg_chat_id || "";
+  $("#checkin-enabled").checked = data.checkin_enabled !== false;
   $("#heartbeat-enabled").checked = data.heartbeat_enabled !== false;
   $("#heartbeat-hour").value = data.heartbeat_hour ?? 9;
   $("#quiet-enabled").checked = Boolean(data.quiet_enabled);
@@ -465,6 +466,7 @@ $("#settings-form").addEventListener("submit", (event) => {
       interval: Number($("#interval").value),
       keyword_interval: Number($("#keyword-interval").value),
       tg_chat_id: $("#tg-chat-id").value.trim(),
+      checkin_enabled: $("#checkin-enabled").checked,
       heartbeat_enabled: $("#heartbeat-enabled").checked,
       heartbeat_hour: Number($("#heartbeat-hour").value),
       quiet_enabled: $("#quiet-enabled").checked,

@@ -2,7 +2,7 @@
 services:
   nodeseek-pm:
     build: .
-    image: nodeseek-pm:0.7.3
+    image: nodeseek-pm:0.7.4
     container_name: nodeseek-pm
     restart: unless-stopped
     init: true
@@ -29,7 +29,7 @@ services:
   # 整台机器关机时它也发不出。已有服务器要手写加一次，拉取代码不会改编排文件。
   nodeseek-watch:
     build: .
-    image: nodeseek-pm:0.7.3
+    image: nodeseek-pm:0.7.4
     container_name: nodeseek-watch
     restart: unless-stopped
     init: true

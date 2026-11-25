@@ -264,6 +264,7 @@ def _status_text(store, running: bool) -> str:
         f"上次成功：{store.get_state('last_success') or '还没有'}",
         f"今天已推送：{store.count_pushes_today()} 条",
         f"间隔：私信 {interval_seconds(store)} 秒，关键词 {keyword_interval_seconds(store)} 秒",
+        f"今日签到：{store.get_state('checkin_result') or '还没有'}",
     ]
     error = (store.get_state("last_error") or "").strip()
     if error:

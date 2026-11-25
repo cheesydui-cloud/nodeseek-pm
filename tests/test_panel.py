@@ -23,7 +23,7 @@ from ns_panel.diff import (
 from ns_panel.botview import answer_for, open_markup, pm_open_links
 from ns_panel.monitor import Monitor, alert_hint
 from ns_panel.browser import SessionDown, auth_mode, find_edge, login_asleep_message, run_with_retry
-from ns_panel.nodeseek import AuthError, CloudflareError, looks_like_challenge
+from ns_panel.nodeseek import AuthError, CloudflareError, describe_checkin, looks_like_challenge
 from datetime import datetime
 
 from ns_panel.posts import Post, parse_category_html, parse_keyword_rules, parse_keywords, parse_rss, plan_posts
@@ -197,6 +197,12 @@ class FakeClient:
 
     def resolve_self_id(self, _payload):
         return self.box.get("self_id", 9)
+
+    def check_in(self):
+        self.box["checkin_calls"] = self.box.get("checkin_calls", 0) + 1
+        if self.box.get("checkin_error"):
+            raise self.box["checkin_error"]
+        return self.box.get("checkin", {"success": True, "message": "签到成功", "gain": 5})
 
 
 def mention_row(
@@ -485,6 +491,71 @@ class MonitorTest(unittest.TestCase):
         self.monitor._maybe_heartbeat()
         self.assertEqual(len(self.sent), 1)
 
+    def test_checkin_sends_once_per_day(self):
+        done, text = describe_checkin({"success": "true", "message": "签到成功", "gain": 5, "continuous": 3})
+        self.assertTrue(done)
+        self.assertIn("获得 5", text)
+        self.assertIn("连续 3", text)
+        already, _already_text = describe_checkin({"success": False, "message": "今天已经签到过了"})
+        self.assertTrue(already)
+        failed, failed_text = describe_checkin({"success": False, "message": "请先登录"})
+        self.assertFalse(failed)
+        self.assertEqual(failed_text, "请先登录")
+
+        self.monitor.clock = lambda: datetime(2026, 11, 25, 0, 5)
+        self.monitor._maybe_checkin()
+        self.assertEqual(self.box["checkin_calls"], 1)
+        self.assertEqual(self.store.get_state("checkin_day"), "2026-11-25")
+        self.assertIn("NodeSeek 签到", self.sent[-1][2])
+        self.assertIn("获得 5", self.sent[-1][2])
+        self.assertNotIn("session", self.sent[-1][2])
+        self.monitor._maybe_checkin()
+        self.assertEqual(self.box["checkin_calls"], 1)
+
+    def test_checkin_failure_waits_and_already_signed_counts(self):
+        self.monitor.clock = lambda: datetime(2026, 11, 25, 1, 0)
+        self.box["checkin_error"] = CloudflareError("被 Cloudflare 拦住")
+        self.monitor._maybe_checkin()
+        self.assertEqual(self.box["checkin_calls"], 1)
+        self.assertIsNone(self.store.get_state("checkin_day"))
+        self.assertEqual(self.store.get_state("last_error") or "", "")
+        self.assertIn("Cloudflare", self.store.get_state("checkin_last_error"))
+        self.monitor._maybe_checkin()
+        self.assertEqual(self.box["checkin_calls"], 1)
+
+        self.store.delete_state("checkin_retry_at")
+        self.box["checkin_error"] = None
+        self.box["checkin"] = {"success": False, "message": "今日已签到"}
+        self.monitor._maybe_checkin()
+        self.assertEqual(self.store.get_state("checkin_day"), "2026-11-25")
+        self.assertIn("已签", self.sent[-1][2])
+        self.assertIsNone(self.store.get_state("checkin_retry_at"))
+
+    def test_checkin_can_be_turned_off_and_skips_without_login(self):
+        self.store.set_setting("checkin_enabled", "0")
+        self.monitor._maybe_checkin()
+        self.assertNotIn("checkin_calls", self.box)
+
+        self.store.set_setting("checkin_enabled", "1")
+        self.store.delete_setting("cookie")
+        self.monitor._maybe_checkin()
+        self.assertNotIn("checkin_calls", self.box)
+        self.assertIn("还没有登录", self.store.get_state("checkin_last_error"))
+        self.monitor._maybe_checkin()
+        self.assertEqual(self.store.get_state("checkin_last_error"), "还没有登录，今天的签到先跳过。")
+
+    def test_checkin_stays_done_when_telegram_fails(self):
+        from ns_panel.telegram import TelegramError
+
+        def fail(_token, _chat_id, _text):
+            raise TelegramError("timeout")
+
+        self.monitor.sender = fail
+        self.monitor.clock = lambda: datetime(2026, 11, 25, 2, 0)
+        self.monitor._maybe_checkin()
+        self.assertEqual(self.store.get_state("checkin_day"), "2026-11-25")
+        self.assertIn("获得 5", self.store.get_state("checkin_result"))
+
     def test_baseline_reads_only_first_page(self):
         self.box["mention_payloads"] = {
             1: {"data": [mention_row(10, title="当前")]},
@@ -653,7 +724,9 @@ class MonitorTest(unittest.TestCase):
         self.assertNotIn("style", keyboard[1][0])
         self.assertEqual(view["reply_markup"]["input_field_placeholder"], "点按钮查看记录")
         self.assertEqual(answer_for("状态", self.store, False)["text"].count("session=abc123"), 0)
-        self.assertIn("没在跑", answer_for("状态", self.store, False)["text"])
+        status = answer_for("状态", self.store, False)["text"]
+        self.assertIn("没在跑", status)
+        self.assertIn("今日签到：还没有", status)
         self.assertIsNone(answer_for("随便说", self.store, False))
         self.assertEqual(answer_for("回复", self.store, True)["text"], "还没有回复。")
 
@@ -773,6 +846,7 @@ class ServerTest(unittest.TestCase):
         self.assertIn("退出登录", html)
         self.assertIn("提到我", html)
         self.assertIn("docker-desktop-note", html)
+        self.assertIn("每天自动签到", html)
         status, css = self.get("/static/app.css")
         self.assertEqual(status, 200)
         self.assertIn(".sidebar", css)
@@ -794,6 +868,16 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn("30", rejected["error"])
         self.assertEqual(body["tg_chat_id"], "42")
+        self.assertTrue(body["checkin_enabled"])
+        code, off = self.post("/api/settings", {"checkin_enabled": False})
+        self.assertEqual(code, 200)
+        self.assertFalse(off["checkin_enabled"])
+        code, kept_off = self.post("/api/settings", {"interval": 30})
+        self.assertEqual(code, 200)
+        self.assertFalse(kept_off["checkin_enabled"])
+        code, on = self.post("/api/settings", {"checkin_enabled": True})
+        self.assertEqual(code, 200)
+        self.assertTrue(on["checkin_enabled"])
         code, status_body = self.post("/api/monitor/start", {})
         self.assertEqual(code, 400)
         self.assertIn("Telegram", status_body["error"])

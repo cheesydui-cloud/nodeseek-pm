@@ -197,7 +197,15 @@ class NodeSeekClient:
         status, content_type, text = self._request(url)
         return read_api(status, content_type, text, COOKIE_BLOCKED, COOKIE_AUTH)
 
-    def _request(self, url: str) -> tuple[int, str, str]:
+    def post_json(self, path: str, referer: str | None = None):
+        url = path if path.startswith("http") else BASE + path
+        status, content_type, text = self._request(url, method="POST", referer=referer)
+        return read_api(status, content_type, text, COOKIE_BLOCKED, COOKIE_AUTH)
+
+    def check_in(self) -> dict:
+        return self.post_json("/api/attendance?random=false", referer=BASE + "/board")
+
+    def _request(self, url: str, method: str = "GET", referer: str | None = None) -> tuple[int, str, str]:
         try:
             from curl_cffi import requests as crequests
         except ImportError as exc:
@@ -208,14 +216,17 @@ class NodeSeekClient:
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Origin": BASE,
-            "Referer": BASE + "/notification",
+            "Referer": referer or (BASE + "/notification"),
             "User-Agent": USER_AGENT,
             "Cookie": self.cookie,
         }
+        if method == "POST":
+            headers["Content-Length"] = "0"
         last_error: Exception | None = None
+        call = crequests.post if method == "POST" else crequests.get
         for impersonate in ("chrome131", "chrome124", "chrome120", "chrome110"):
             try:
-                response = crequests.get(
+                response = call(
                     url,
                     headers=headers,
                     impersonate=impersonate,
@@ -233,6 +244,27 @@ class NodeSeekClient:
                     continue
                 break
         raise ApiError(f"请求 NodeSeek 失败：{last_error}")
+
+
+def describe_checkin(payload) -> tuple[bool, str]:
+    """返回 (今天是否不用再试, 给用户看的一句)。"""
+    if not isinstance(payload, dict):
+        return False, "签到没有返回结果"
+    message = str(payload.get("message") or payload.get("msg") or "").strip()
+    success = payload.get("success")
+    ok = success is True or str(success).lower() == "true"
+    already = any(word in message for word in ("已签", "签过", "重复签", "已经签", "签到过"))
+    if not ok and not already:
+        return False, message or "签到没有成功"
+    text = message or ("今天已经签过了" if already else "签到成功")
+    extras = []
+    for key, label in (("gain", "获得"), ("current", "当前"), ("continuous", "连续")):
+        value = payload.get(key)
+        if value not in (None, ""):
+            extras.append(f"{label} {value}")
+    if extras:
+        text = text.rstrip("。") + "。" + "，".join(extras)
+    return True, text
 
 
 def _loads(text: str):
