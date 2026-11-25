@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -22,7 +23,7 @@ from ns_panel.diff import (
 )
 from ns_panel.botview import answer_for, open_markup, pm_open_links
 from ns_panel.monitor import Monitor, alert_hint
-from ns_panel.browser import SessionDown, auth_mode, find_edge, login_asleep_message, run_with_retry
+from ns_panel.browser import BrowserDown, SessionDown, auth_mode, find_edge, login_asleep_message, run_with_retry
 from ns_panel.nodeseek import AuthError, CloudflareError, describe_checkin, looks_like_challenge
 from datetime import datetime
 
@@ -134,7 +135,7 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(calls, {"action": 2, "wake": 1})
 
     def test_retry_gives_up_with_clear_error(self):
-        with self.assertRaises(CloudflareError) as caught:
+        with self.assertRaises(BrowserDown) as caught:
             run_with_retry(lambda: (_ for _ in ()).throw(SessionDown("asleep")), lambda: None)
         self.assertIn("登录窗口没有响应", str(caught.exception))
 
@@ -346,6 +347,20 @@ class MonitorTest(unittest.TestCase):
         self.assertFalse(failed["ok"])
         retried = self.monitor.check_once(wait=True)
         self.assertEqual(retried["notified"], 1)
+
+    def test_browser_down_retries_soon_and_alerts_after_three_minutes(self):
+        self.box["list_error"] = BrowserDown("登录窗口没有响应。请切到那个 Edge 看一眼，保持窗口开着。")
+        first = self.monitor.check_once(wait=True)
+        self.assertFalse(first["ok"])
+        self.assertEqual(first["retry_in"], 20)
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(self.store.get_state("cf_until"))
+        self.store.set_state("browser_down_since", str(time.time() - 180))
+        second = self.monitor.check_once(wait=True)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("登录窗口没有响应", self.sent[0][2])
+        self.monitor.check_once(wait=True)
+        self.assertEqual(len(self.sent), 1)
 
     def test_cloudflare_waits_and_alerts_once(self):
         self.box["list_error"] = CloudflareError("Cloudflare 拦住了请求。")
@@ -1086,6 +1101,31 @@ class KeywordMonitorTest(unittest.TestCase):
         self.assertEqual(self.sent, [])
         hits = self.store.list_hits()
         self.assertTrue(any(item["status"] == "listed" and "历史" in item["keywords"] for item in hits))
+
+    def test_rss_connect_failure_backs_off_and_logs_once(self):
+        self.box["posts"] = []
+        self.box["fetched"] = []
+        self.box["errors"] = [
+            "RSS：请求 NodeSeek 失败：curl: (28) Failed to connect to rss.nodeseek.com:443 after 21257 ms"
+        ]
+        first = self.monitor._scheduled_keywords()
+        self.assertFalse(first["ok"])
+        self.assertIn("过几分钟再试", first["error"])
+        calls = len(self.feed_calls)
+        self.box["errors"] = [
+            "RSS：请求 NodeSeek 失败：curl: (28) Failed to connect to rss.nodeseek.com:443 after 19999 ms"
+        ]
+        second = self.monitor._scheduled_keywords()
+        self.assertEqual(len(self.feed_calls), calls)
+        self.assertIn("过几分钟再试", second["error"])
+        logged = [row["message"] for row in self.store.list_logs() if "RSS" in row["message"] or "连不上" in row["message"]]
+        self.assertEqual(logged, ["没能拉到帖子：公开 RSS 暂时连不上，过几分钟再试。"])
+        self.store.set_state("rss_until", str(time.time() - 1))
+        self.box["errors"] = []
+        self.box["posts"] = [make_post(21, "新出 VPS")]
+        self.box["fetched"] = ["daily"]
+        self.monitor.scan_posts()
+        self.assertIsNone(self.store.get_state("rss_until"))
 
     def test_feed_error_does_not_fail_private_message_check(self):
         self.monitor.check_once(wait=True)

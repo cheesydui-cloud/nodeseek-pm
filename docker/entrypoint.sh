@@ -92,12 +92,21 @@ watch_browser() {
   miss=0
   sleep 45
   while true; do
+    if [ -f /tmp/ns-checking ]; then
+      now=$(date +%s)
+      mtime=$(stat -c %Y /tmp/ns-checking 2>/dev/null || echo 0)
+      if [ $((now - mtime)) -lt 180 ]; then
+        miss=0
+        sleep 20
+        continue
+      fi
+    fi
     if runuser -u ns -- python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9337/json/version', timeout=3).read()" >/dev/null 2>&1; then
       miss=0
     else
       miss=$((miss + 1))
-      if [ "$miss" -ge 2 ]; then
-        echo "登录浏览器调试端口没有响应，正在重新打开。"
+      if [ "$miss" -ge 9 ]; then
+        echo "登录浏览器调试端口连续几分钟没有响应，正在重新打开。"
         pkill -u ns -f /usr/lib/chromium/chromium || true
         clear_browser_lock
         miss=0

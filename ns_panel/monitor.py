@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 
 from ns_panel.botview import (
@@ -17,7 +18,7 @@ from ns_panel.botview import (
     reply_keyboard,
     titled_open_links,
 )
-from ns_panel.browser import PORT, BrowserClient, auth_mode, port_open, shared_session, _wake_target
+from ns_panel.browser import PORT, BrowserClient, BrowserDown, auth_mode, port_open, shared_session, _wake_target
 from ns_panel.diff import (
     format_pushes,
     is_newer,
@@ -56,7 +57,14 @@ MIN_KEYWORD_INTERVAL = 30
 MAX_INTERVAL = 3600
 RSS_GAP_SECONDS = 6 * 3600
 RSS_PULL_OVERLAP = 4
+RSS_BACKOFF_SECONDS = 300
+RSS_BACKOFF_MAX = 600
+RSS_WAIT = "没能拉到帖子：公开 RSS 暂时连不上，过几分钟再试。"
 SUPERVISE_SECONDS = 15
+BROWSER_RETRY_SECONDS = 20
+BROWSER_ALERT_SECONDS = 180
+AWAKE_MISSES = 9
+CHECK_MARK = "/tmp/ns-checking"
 
 
 def _bounded_interval(raw: str | None, default: int, minimum: int) -> int:
@@ -157,24 +165,25 @@ class Monitor:
             self._listen_stop.set()
 
     def check_once(self, wait: bool = False) -> dict:
-        if wait:
-            self._check_lock.acquire()
-        elif not self._check_lock.acquire(timeout=0.2):
-            return {"ok": False, "error": "上一次检查还在进行"}
-        try:
-            return self._check()
-        except Exception as exc:
-            message = f"检查失败：{exc}"
-            self.store.set_state("last_error", message)
-            self.store.set_state("last_check", _now())
-            self.log("error", message)
-            return {"ok": False, "error": message}
-        finally:
-            self._check_lock.release()
+        with self._check_hold(None if wait else 0.2) as held:
+            if not held:
+                return {"ok": False, "error": "上一次检查还在进行"}
+            try:
+                return self._check()
+            except Exception as exc:
+                message = f"检查失败：{exc}"
+                self.store.set_state("last_error", message)
+                self.store.set_state("last_check", _now())
+                self.log("error", message)
+                return {"ok": False, "error": message}
 
     def scan_posts(self, reset: bool = False) -> dict:
-        if not self._check_lock.acquire(timeout=0.2):
-            return {"ok": False, "error": "上一次检查还在进行"}
+        with self._check_hold(0.2) as held:
+            if not held:
+                return {"ok": False, "error": "上一次检查还在进行"}
+            return self._scan_posts_held(reset)
+
+    def _scan_posts_held(self, reset: bool) -> dict:
         try:
             if reset:
                 self.store.reset_post_baseline()
@@ -188,8 +197,6 @@ class Monitor:
             message = f"关键词检查失败：{exc}"
             self._note_post_error(message)
             return {"ok": False, "error": message, "notified": 0}
-        finally:
-            self._check_lock.release()
 
     def log(self, level: str, message: str) -> None:
         self.store.add_log(level, message)
@@ -213,7 +220,11 @@ class Monitor:
                 if now >= next_inbox:
                     result = self._safe_call(self._check_inbox)
                     if not result.get("busy"):
-                        next_inbox = time.time() + interval_seconds(self.store)
+                        delay = interval_seconds(self.store)
+                        retry_in = result.get("retry_in")
+                        if isinstance(retry_in, int) and 0 < retry_in < delay:
+                            delay = retry_in
+                        next_inbox = time.time() + delay
                 if now >= next_keyword:
                     result = self._safe_call(self._scheduled_keywords)
                     if not result.get("busy"):
@@ -241,18 +252,47 @@ class Monitor:
                 self.log("error", "监控线程意外退出")
 
     def _safe_call(self, fn) -> dict:
-        if not self._check_lock.acquire(timeout=0.2):
-            return {"ok": False, "busy": True, "error": "上一次检查还在进行"}
+        with self._check_hold(0.2) as held:
+            if not held:
+                return {"ok": False, "busy": True, "error": "上一次检查还在进行"}
+            try:
+                return fn()
+            except Exception as exc:
+                message = f"检查失败：{exc}"
+                self.store.set_state("last_error", message)
+                self.store.set_state("last_check", _now())
+                self.log("error", message)
+                return {"ok": False, "error": message}
+
+    @contextmanager
+    def _check_hold(self, timeout: float | None):
+        if timeout is None:
+            acquired = self._check_lock.acquire()
+        elif timeout == 0:
+            acquired = self._check_lock.acquire(blocking=False)
+        else:
+            acquired = self._check_lock.acquire(timeout=timeout)
+        if not acquired:
+            yield False
+            return
+        self._mark_checking(True)
         try:
-            return fn()
-        except Exception as exc:
-            message = f"检查失败：{exc}"
-            self.store.set_state("last_error", message)
-            self.store.set_state("last_check", _now())
-            self.log("error", message)
-            return {"ok": False, "error": message}
+            yield True
         finally:
+            self._mark_checking(False)
             self._check_lock.release()
+
+    def _mark_checking(self, active: bool) -> None:
+        if os.environ.get("NS_RUNTIME") != "docker":
+            return
+        try:
+            if active:
+                with open(CHECK_MARK, "w", encoding="utf-8") as handle:
+                    handle.write(str(int(time.time())))
+            elif os.path.exists(CHECK_MARK):
+                os.remove(CHECK_MARK)
+        except OSError:
+            pass
 
     def _check(self) -> dict:
         self.store.set_state("last_check", _now())
@@ -295,6 +335,9 @@ class Monitor:
         return pm
 
     def _scheduled_keywords(self) -> dict:
+        cooled = self._rss_cooling_message()
+        if cooled:
+            return {"ok": False, "error": cooled, "notified": 0}
         rules, excludes = self._keyword_rules()
         if not rules:
             return {"ok": True, "skipped": True, "notified": 0}
@@ -312,6 +355,8 @@ class Monitor:
             first = client.get_message_list(page=1)
             rows = message_rows(first)
             account = self._account_if_needed(client)
+        except BrowserDown as exc:
+            return self._note_browser_down(str(exc))
         except AuthError as exc:
             return self._fail(str(exc), alert=True)
         except CloudflareError as exc:
@@ -400,8 +445,12 @@ class Monitor:
         return {"ok": True, "notified": len(notify), "message": message, "baseline": False}
 
     def scan_mentions(self, reset: bool = False) -> dict:
-        if not self._check_lock.acquire(timeout=0.2):
-            return {"ok": False, "error": "上一次检查还在进行"}
+        with self._check_hold(0.2) as held:
+            if not held:
+                return {"ok": False, "error": "上一次检查还在进行"}
+            return self._scan_mentions_held(reset)
+
+    def _scan_mentions_held(self, reset: bool) -> dict:
         try:
             if reset:
                 self.store.delete_state("mentions_baseline_done")
@@ -415,8 +464,6 @@ class Monitor:
             message = f"@检查失败：{exc}"
             self._note_mention_error(message)
             return {"ok": False, "error": message, "notified": 0}
-        finally:
-            self._check_lock.release()
 
     def _with_mentions(self, cookie: str, pm: dict) -> dict:
         try:
@@ -481,8 +528,12 @@ class Monitor:
         return {"ok": True, "notified": len(pending), "message": f"已推送 {len(pending)} 条@"}
 
     def scan_replies(self, reset: bool = False) -> dict:
-        if not self._check_lock.acquire(timeout=0.2):
-            return {"ok": False, "error": "上一次检查还在进行"}
+        with self._check_hold(0.2) as held:
+            if not held:
+                return {"ok": False, "error": "上一次检查还在进行"}
+            return self._scan_replies_held(reset)
+
+    def _scan_replies_held(self, reset: bool) -> dict:
         try:
             if reset:
                 self.store.delete_state("replies_baseline_done")
@@ -496,8 +547,6 @@ class Monitor:
             message = f"回复检查失败：{exc}"
             self._note_reply_error(message)
             return {"ok": False, "error": message, "notified": 0}
-        finally:
-            self._check_lock.release()
 
     def _with_replies(self, cookie: str, pm: dict) -> dict:
         try:
@@ -587,7 +636,9 @@ class Monitor:
         posts = [post for post in posts if post.category in allowed]
         if not posts and not fetched:
             message = "没能拉到帖子：" + ("；".join(errors[:3]) or "没有返回内容")
-            self._note_post_error(message)
+            if _rss_connect_failure(message):
+                self._schedule_rss_backoff()
+            message = self._note_post_error(message)
             return {"ok": False, "error": message, "notified": 0}
         pull_in = False
         if window_ids is not None:
@@ -596,6 +647,9 @@ class Monitor:
             self._note_post_error("部分板块没拉到：" + "；".join(errors[:3]))
         else:
             self.store.set_state("posts_last_error", "")
+            self.store.delete_state("posts_error_kind")
+            self.store.delete_state("rss_until")
+            self.store.set_state("rss_streak", "0")
             self.store.set_state("posts_last_success", _now())
 
         baseline_done = self.store.get_state("posts_baseline_done") == "1"
@@ -899,12 +953,10 @@ class Monitor:
             pass
         if self._cooling_message():
             return
-        if not self._check_lock.acquire(timeout=0):
-            return
-        try:
+        with self._check_hold(0) as held:
+            if not held:
+                return
             self._checkin_once(today)
-        finally:
-            self._check_lock.release()
 
     def _checkin_once(self, today: str) -> None:
         cookie = (self.store.get_setting("cookie") or "").strip()
@@ -939,11 +991,54 @@ class Monitor:
         self.store.set_state("checkin_last_error", message)
         self.log("error", f"签到还没完成：{message}")
 
-    def _note_post_error(self, message: str) -> None:
-        if self.store.get_state("posts_last_error") == message:
-            return
-        self.store.set_state("posts_last_error", message)
-        self.log("error", message)
+    def _note_post_error(self, message: str) -> str:
+        shown = RSS_WAIT if _rss_connect_failure(message) else message
+        kind = "rss-connect" if shown == RSS_WAIT else shown
+        self.store.set_state("posts_last_error", shown)
+        if self.store.get_state("posts_error_kind") == kind:
+            return shown
+        self.store.set_state("posts_error_kind", kind)
+        self.log("error", shown)
+        return shown
+
+    def _note_browser_down(self, message: str) -> dict:
+        now = time.time()
+        raw = self.store.get_state("browser_down_since") or ""
+        try:
+            since = float(raw)
+        except ValueError:
+            since = 0.0
+        if since <= 0:
+            since = now
+            self.store.set_state("browser_down_since", str(now))
+        changed = self.store.get_state("last_error") != message
+        self.store.set_state("last_error", message)
+        self.store.set_state("ok_streak", "0")
+        if changed:
+            self.log("error", message)
+        if now - since >= BROWSER_ALERT_SECONDS:
+            self._alert(message)
+        return {"ok": False, "error": message, "retry_in": BROWSER_RETRY_SECONDS}
+
+    def _rss_cooling_message(self) -> str | None:
+        raw = self.store.get_state("rss_until") or ""
+        try:
+            until = float(raw)
+        except ValueError:
+            return None
+        if time.time() >= until:
+            return None
+        return self.store.get_state("posts_last_error") or RSS_WAIT
+
+    def _schedule_rss_backoff(self) -> None:
+        try:
+            streak = int(self.store.get_state("rss_streak") or "0")
+        except ValueError:
+            streak = 0
+        streak += 1
+        self.store.set_state("rss_streak", str(streak))
+        wait = min(RSS_BACKOFF_SECONDS * streak, RSS_BACKOFF_MAX)
+        self.store.set_state("rss_until", str(time.time() + wait))
 
     def _send(self, text: str, reply_markup: dict | None = None) -> None:
         token = (self.store.get_setting("tg_token") or "").strip()
@@ -1059,30 +1154,28 @@ class Monitor:
             time.sleep(20)
             if auth_mode(self.store) != "browser":
                 continue
-            if not self._check_lock.acquire(blocking=False):
-                continue
-            wake = False
-            try:
+            with self._check_hold(0) as held:
+                if not held:
+                    continue
+                wake = False
                 if not port_open(PORT, timeout=1):
                     self._awake_misses += 1
-                    wake = self._awake_misses >= 2
+                    wake = self._awake_misses >= AWAKE_MISSES
                 else:
                     try:
                         shared_session(PORT).poke()
                         self._awake_misses = 0
                     except Exception:
                         self._awake_misses += 1
-                        wake = self._awake_misses >= 2
-            finally:
-                self._check_lock.release()
-            if not wake:
-                continue
-            self._awake_misses = 0
-            print("[info] 登录页面没有响应，正在重新打开。", flush=True)
-            try:
-                _wake_target(PORT)
-            except Exception as exc:
-                print(f"[info] 重新打开登录页面没有成功：{exc}", flush=True)
+                        wake = self._awake_misses >= AWAKE_MISSES
+                if not wake:
+                    continue
+                self._awake_misses = 0
+                print("[info] 登录页面连续几分钟没有响应，正在重新打开。", flush=True)
+                try:
+                    _wake_target(PORT, restart_process=True)
+                except Exception as exc:
+                    print(f"[info] 重新打开登录页面没有成功：{exc}", flush=True)
 
     def _alert(self, message: str) -> None:
         if self.store.get_state("alert_message") == message:
@@ -1098,6 +1191,7 @@ class Monitor:
 
     def _recover(self) -> None:
         self.store.delete_state("cf_until")
+        self.store.delete_state("browser_down_since")
         self.store.set_state("last_error", "")
         self.store.set_state("last_success", _now())
         try:
@@ -1125,6 +1219,24 @@ class Monitor:
             return
         self.store.delete_state("alert_message")
         self.store.add_event("info", "监控已恢复", text)
+
+
+def _rss_connect_failure(message: str) -> bool:
+    text = message.lower()
+    if "rss" not in text and "rss.nodeseek.com" not in text:
+        return False
+    needles = (
+        "could not connect",
+        "failed to connect",
+        "timed out",
+        "timeout",
+        "curl: (6)",
+        "curl: (7)",
+        "curl: (28)",
+        "name or service not known",
+        "temporary failure in name resolution",
+    )
+    return any(needle in text for needle in needles)
 
 
 def alert_hint() -> str:

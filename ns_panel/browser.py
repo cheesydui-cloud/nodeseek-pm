@@ -274,6 +274,10 @@ class SessionDown(Exception):
     pass
 
 
+class BrowserDown(ApiError):
+    """登录窗口短暂无响应。这不是 Cloudflare 拦截，不要走进长退避。"""
+
+
 _SESSIONS: dict[int, "CdpSession"] = {}
 _SESSIONS_LOCK = threading.Lock()
 
@@ -298,7 +302,7 @@ def run_with_retry(action, wake, attempts: int = 3):
                 break
             print(f"[info] 登录窗口没有立刻响应：{exc}。正在重新打开页面。", flush=True)
             wake()
-    raise CloudflareError(login_asleep_message()) from last
+    raise BrowserDown(login_asleep_message()) from last
 
 
 class CdpSession:
@@ -482,12 +486,12 @@ def _open_nodeseek_tab(port: int) -> None:
             return
 
 
-def _wake_target(port: int) -> None:
+def _wake_target(port: int, restart_process: bool = False) -> None:
     session = _SESSIONS.get(port)
     if session is not None:
         session.close()
     if not port_open(port, timeout=1):
-        if _restart_container_browser():
+        if restart_process and _restart_container_browser():
             wait_for_port(port, 20)
         return
     page = _nodeseek_page(port)
@@ -503,7 +507,7 @@ def _wake_target(port: int) -> None:
     if _reload_via_cdp(port, target_id):
         time.sleep(2)
         return
-    if _restart_container_browser():
+    if restart_process and _restart_container_browser():
         wait_for_port(port, 20)
 
 
