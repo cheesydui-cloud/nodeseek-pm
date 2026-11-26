@@ -1003,6 +1003,9 @@ class PostParseTest(unittest.TestCase):
         plans = plan_posts(posts, set(), True, rules, ["出掉"], ["trade", "daily", "carpool"])
         pushed = [item.post.post_id for item in plans if item.push]
         self.assertEqual(pushed, [1, 5])
+        inner = parse_keyword_rules("成人 @内版\n灌水 @无意义")
+        self.assertEqual(inner[0].boards, ("meaningless",))
+        self.assertEqual(inner[1].boards, ("meaningless",))
 
 
 class ScheduleTest(unittest.TestCase):

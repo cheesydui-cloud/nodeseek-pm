@@ -26,10 +26,12 @@ BOARDS: tuple[tuple[str, str], ...] = (
     ("dev", "Dev"),
     ("photo-share", "贴图"),
     ("expose", "曝光"),
-    ("meaningless", "无意义"),
+    # 登录侧栏显示「内版」。公开页仍叫「无意义」，RSS 分类标识仍是 meaningless。
+    ("meaningless", "内版"),
     ("sandbox", "沙盒"),
 )
 BOARD_NAMES = {slug: name for slug, name in BOARDS}
+BOARD_ALIASES = {"无意义": "meaningless"}
 KNOWN_BOARDS = set(BOARD_NAMES)
 
 
@@ -482,6 +484,9 @@ def _board_slug(token: str) -> str:
         if slug.casefold() == folded:
             return slug
     for slug, name in BOARDS:
+        if name == text or name.casefold() == folded:
+            return slug
+    for name, slug in BOARD_ALIASES.items():
         if name == text or name.casefold() == folded:
             return slug
     raise ValueError(f"没有这个板块：{text}")
