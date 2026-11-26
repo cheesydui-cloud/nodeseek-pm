@@ -51,11 +51,14 @@ from ns_panel.schedule import heartbeat_due, in_quiet_hours
 from ns_panel.store import Store
 from ns_panel.telegram import TelegramError, get_updates, send_message
 from ns_panel.water import (
+    MAX_DAILY,
     RETRY_SECONDS as WATER_RETRY_SECONDS,
     describe_comment,
     next_phrase,
     parse_phrases,
     pick_water_target,
+    resolve_water_board,
+    water_board_name,
 )
 
 
@@ -79,7 +82,7 @@ def _water_daily(store: Store) -> int:
         value = int(store.get_setting("water_daily") or "3")
     except ValueError:
         value = 3
-    return max(1, min(value, 5))
+    return max(1, min(value, MAX_DAILY))
 
 
 def _water_gap_minutes(store: Store) -> int:
@@ -1063,8 +1066,13 @@ class Monitor:
             self._finish_water(today, count, "今天的条数已经发完。")
             return
         try:
+            board = resolve_water_board(self.store.get_setting("water_board"))
+        except ValueError as exc:
+            self._note_water(str(exc))
+            return
+        try:
             client = self.browser_client_factory()
-            targets = client.list_water_targets()
+            targets = client.list_water_targets(board)
         except (AuthError, CloudflareError, ApiError, ValueError) as exc:
             self._note_water(str(exc))
             return
@@ -1077,9 +1085,10 @@ class Monitor:
             rules=rules,
             excludes=excludes,
             boards=selected_slugs(self.store.get_setting("boards")),
+            board=board,
         )
         if chosen is None:
-            self._note_water("灌水区这页没有能发的帖，过半小时再看。")
+            self._note_water(f"{water_board_name(board)}这页没有能发的帖，过半小时再看。")
             return
         try:
             index = int(self.store.get_state("water_phrase_index") or "0")

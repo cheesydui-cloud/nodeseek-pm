@@ -38,7 +38,14 @@ from ns_panel.posts import (
     validate_keywords,
     normalize_boards,
 )
-from ns_panel.water import parse_phrases, validate_water_settings, water_status_line
+from ns_panel.water import (
+    MAX_DAILY,
+    WATER_BOARD,
+    parse_phrases,
+    resolve_water_board,
+    validate_water_settings,
+    water_status_line,
+)
 from ns_panel.schedule import in_quiet_hours, valid_hhmm
 from ns_panel.store import Store
 from ns_panel.botview import reply_keyboard
@@ -454,6 +461,8 @@ def settings_payload(store: Store) -> dict:
         "water_daily": _water_daily(store),
         "water_gap": _water_gap(store),
         "water_phrases": store.get_setting("water_phrases") or "",
+        "water_board": _water_board(store),
+        "water_boards": [{"slug": slug, "name": name} for slug, name in BOARDS],
         "water_status": water_status_line(store),
         "heartbeat_enabled": (store.get_setting("heartbeat_enabled", "1") or "1") != "0",
         "heartbeat_hour": _heartbeat_hour(store),
@@ -463,12 +472,19 @@ def settings_payload(store: Store) -> dict:
     }
 
 
+def _water_board(store: Store) -> str:
+    try:
+        return resolve_water_board(store.get_setting("water_board"))
+    except ValueError:
+        return WATER_BOARD
+
+
 def _water_daily(store: Store) -> int:
     try:
         value = int(store.get_setting("water_daily") or "3")
     except ValueError:
         value = 3
-    return max(1, min(value, 5))
+    return max(1, min(value, MAX_DAILY))
 
 
 def _water_gap(store: Store) -> int:
@@ -484,7 +500,7 @@ def _bounded_water_daily(raw) -> int:
         value = int(raw)
     except (TypeError, ValueError):
         return 3
-    return max(1, min(value, 5))
+    return max(1, min(value, MAX_DAILY))
 
 
 def _bounded_water_gap(raw) -> int:
@@ -496,7 +512,7 @@ def _bounded_water_gap(raw) -> int:
 
 
 def _prepare_water(store: Store, data: dict) -> str | None:
-    keys = ("water_enabled", "water_daily", "water_gap", "water_phrases")
+    keys = ("water_enabled", "water_daily", "water_gap", "water_phrases", "water_board")
     if not any(key in data for key in keys):
         return None
     enabled = data.get("water_enabled") if "water_enabled" in data else (store.get_setting("water_enabled") == "1")
@@ -510,8 +526,8 @@ def _prepare_water(store: Store, data: dict) -> str | None:
             asked = int(data.get("water_daily"))
         except (TypeError, ValueError):
             return "每天条数必须是数字"
-        if asked < 1 or asked > 5:
-            return "每天条数要在 1 到 5 之间"
+        if asked < 1 or asked > MAX_DAILY:
+            return f"每天条数要在 1 到 {MAX_DAILY} 之间"
         daily = asked
     if "water_gap" in data:
         try:
@@ -521,6 +537,11 @@ def _prepare_water(store: Store, data: dict) -> str | None:
         if asked_gap < 10 or asked_gap > 240:
             return "间隔要在 10 到 240 分钟之间"
         gap = asked_gap
+    if "water_board" in data:
+        try:
+            resolve_water_board(str(data.get("water_board") or ""))
+        except ValueError as exc:
+            return str(exc)
     return validate_water_settings(bool(enabled), phrases, daily, gap)
 
 
@@ -595,6 +616,8 @@ def update_settings(store: Store, data: dict) -> str | None:
         store.set_setting("water_gap", str(_bounded_water_gap(data.get("water_gap"))))
     if "water_phrases" in data:
         store.set_setting("water_phrases", "\n".join(parse_phrases(str(data.get("water_phrases") or ""))))
+    if "water_board" in data:
+        store.set_setting("water_board", resolve_water_board(str(data.get("water_board") or "")))
     if "heartbeat_enabled" in data:
         store.set_setting("heartbeat_enabled", "1" if data.get("heartbeat_enabled") else "0")
     if "heartbeat_hour" in data and str(data.get("heartbeat_hour") or "").strip() != "":

@@ -263,6 +263,17 @@ async function loadLogs() {
   `).join("");
 }
 
+function renderWaterBoards(data) {
+  const select = $("#water-board");
+  if (!select) return;
+  const current = data.water_board || "meaningless";
+  const boards = data.water_boards || [];
+  if (!boards.length) return;
+  select.innerHTML = boards.map((board) =>
+    `<option value="${esc(board.slug)}"${board.slug === current ? " selected" : ""}>${esc(board.name)}</option>`
+  ).join("");
+}
+
 function renderBoards(data) {
   const box = $("#board-list");
   const selected = new Set(data.boards || []);
@@ -391,6 +402,7 @@ async function loadSettings() {
   $("#water-daily").value = data.water_daily ?? 3;
   $("#water-gap").value = data.water_gap ?? 10;
   $("#water-phrases").value = data.water_phrases || "";
+  renderWaterBoards(data);
   $("#water-status").textContent = data.water_status || "关着";
   $("#heartbeat-enabled").checked = data.heartbeat_enabled !== false;
   $("#heartbeat-hour").value = data.heartbeat_hour ?? 9;
@@ -486,6 +498,7 @@ $("#settings-form").addEventListener("submit", (event) => {
       water_daily: Number($("#water-daily").value),
       water_gap: Number($("#water-gap").value),
       water_phrases: $("#water-phrases").value,
+      water_board: $("#water-board").value,
       heartbeat_enabled: $("#heartbeat-enabled").checked,
       heartbeat_hour: Number($("#heartbeat-hour").value),
       quiet_enabled: $("#quiet-enabled").checked,

@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from ns_panel.diff import strip_html
-from ns_panel.posts import KeywordRule, Post, match_rules
+from ns_panel.posts import BOARD_NAMES, KeywordRule, Post, _board_slug, match_rules
 
 
 WATER_BOARD = "meaningless"
 WATER_PATH = "/categories/meaningless"
 COMMENT_PATH = "/api/content/new-comment"
-MAX_DAILY = 5
+MAX_DAILY = 50
 DEFAULT_DAILY = 3
 MIN_GAP_MINUTES = 10
 MAX_GAP_MINUTES = 240
@@ -41,6 +41,21 @@ class CommentOutcome:
     ok: bool
     stop_today: bool
     message: str
+
+
+def resolve_water_board(raw: str | None) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return WATER_BOARD
+    return _board_slug(text)
+
+
+def water_path(slug: str) -> str:
+    return f"/categories/{resolve_water_board(slug)}"
+
+
+def water_board_name(slug: str) -> str:
+    return BOARD_NAMES.get(slug, slug)
 
 
 def parse_phrases(text: str) -> list[str]:
@@ -94,7 +109,7 @@ def describe_comment(payload) -> CommentOutcome:
     return CommentOutcome(False, False, message or "评论没有成功")
 
 
-def parse_water_board(html_text: str) -> list[WaterTarget]:
+def parse_water_board(html_text: str, category: str = WATER_BOARD) -> list[WaterTarget]:
     start = (html_text or "").find('<ul class="post-list">')
     if start < 0:
         return []
@@ -118,10 +133,10 @@ def parse_water_board(html_text: str) -> list[WaterTarget]:
         author = re.search(r'data-uid="(\d+)"', part) or re.search(r'href="/space/(\d+)"', part)
         author_id = int(author.group(1)) if author else 0
         stamp = re.search(r'datetime="([^"]+)"', part)
-        category = WATER_BOARD
+        item_category = category
         category_link = re.search(r'href="/categories/([^"]+)"', part)
         if category_link:
-            category = category_link.group(1)
+            item_category = category_link.group(1)
         found.append(
             WaterTarget(
                 post_id=post_id,
@@ -129,7 +144,7 @@ def parse_water_board(html_text: str) -> list[WaterTarget]:
                 author_id=author_id,
                 active_at=_parse_time(stamp.group(1) if stamp else ""),
                 read_only="read-only" in part,
-                category=category,
+                category=item_category,
             )
         )
     return found
@@ -144,6 +159,7 @@ def pick_water_target(
     rules: list[KeywordRule],
     excludes: list[str],
     boards: list[str],
+    board: str = WATER_BOARD,
 ) -> WaterTarget | None:
     cutoff = _stamp(now) - MAX_AGE.total_seconds()
     for target in targets:
@@ -151,7 +167,7 @@ def pick_water_target(
             continue
         if target.author_id and target.author_id == self_id:
             continue
-        if target.category != WATER_BOARD:
+        if target.category != board:
             continue
         active = _stamp(target.active_at) if target.active_at else None
         if active is None or active < cutoff:

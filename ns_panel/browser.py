@@ -247,10 +247,11 @@ class BrowserClient:
             raise ApiError(f"HTTP {status}")
         return text
 
-    def list_water_targets(self):
-        from ns_panel.water import WATER_PATH, parse_water_board
+    def list_water_targets(self, board: str | None = None):
+        from ns_panel.water import parse_water_board, resolve_water_board, water_path
 
-        return parse_water_board(self.get_text(WATER_PATH))
+        slug = resolve_water_board(board)
+        return parse_water_board(self.get_text(water_path(slug)), category=slug)
 
     def comment(self, post_id: int, content: str) -> dict:
         from ns_panel.water import COMMENT_PATH

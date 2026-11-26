@@ -212,8 +212,9 @@ class FakeClient:
             raise self.box["checkin_error"]
         return self.box.get("checkin", {"success": True, "message": "签到成功", "gain": 5})
 
-    def list_water_targets(self):
+    def list_water_targets(self, board=None):
         self.box["water_list_calls"] = self.box.get("water_list_calls", 0) + 1
+        self.box.setdefault("water_boards", []).append(board)
         if self.box.get("water_list_error"):
             raise self.box["water_list_error"]
         return list(self.box.get("water_targets") or [])
@@ -681,6 +682,18 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(self.box["comment_calls"], 1)
         self.assertIn("登录浏览器", self.store.get_state("water_last_error"))
 
+    def test_water_uses_the_selected_board(self):
+        self._arm_water("1")
+        self.store.set_setting("water_board", "日常")
+        now = datetime(2026, 11, 26, 9, 0)
+        self.box["water_targets"] = [
+            WaterTarget(15, "灌水", 5, now, category="meaningless"),
+            WaterTarget(21, "日常帖", 4, now, category="daily"),
+        ]
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["water_boards"], ["daily"])
+        self.assertEqual(self.box["comments"], [(21, "路过看看")])
+
     def test_water_new_day_ignores_yesterdays_stop(self):
         self._arm_water("2")
         self.store.set_state("water_day", "2026-11-25")
@@ -993,7 +1006,9 @@ class ServerTest(unittest.TestCase):
         self.assertIn("docker-desktop-note", html)
         self.assertIn("每天自动签到", html)
         self.assertIn("水贴", html)
-        self.assertIn("每天在灌水区发短回复", html)
+        self.assertIn("每天在所选板块发短回复", html)
+        self.assertIn('id="water-board"', html)
+        self.assertIn('id="water-daily" name="water_daily" type="number" min="1" max="50"', html)
         status, css = self.get("/static/app.css")
         self.assertEqual(status, 200)
         self.assertIn(".sidebar", css)
@@ -1040,9 +1055,35 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(watered["water_enabled"])
         self.assertEqual(watered["water_daily"], 3)
         self.assertEqual(watered["water_phrases"], "路过看看\n学习了")
+        code, many = self.post(
+            "/api/settings",
+            {"water_enabled": True, "water_daily": 20, "water_gap": 20, "water_phrases": "路过看看\n学习了"},
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(many["water_daily"], 20)
+        self.assertEqual(many["water_board"], "meaningless")
+        code, boarded = self.post(
+            "/api/settings",
+            {"water_board": "日常"},
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(boarded["water_board"], "daily")
+        names = [item["name"] for item in boarded["water_boards"]]
+        self.assertIn("内版", names)
+        self.assertIn("日常", names)
+        code, unknown = self.post("/api/settings", {"water_board": "不存在"})
+        self.assertEqual(code, 400)
+        self.assertIn("没有这个板块", unknown["error"])
+        code, too_many = self.post(
+            "/api/settings",
+            {"water_enabled": True, "water_daily": 51, "water_phrases": "甲\n乙"},
+        )
+        self.assertEqual(code, 400)
+        self.assertIn("50", too_many["error"])
         code, kept_water = self.post("/api/settings", {"interval": 40})
         self.assertEqual(code, 200)
         self.assertTrue(kept_water["water_enabled"])
+        self.assertEqual(kept_water["water_board"], "daily")
         code, status_body = self.post("/api/monitor/start", {})
         self.assertEqual(code, 400)
         self.assertIn("Telegram", status_body["error"])

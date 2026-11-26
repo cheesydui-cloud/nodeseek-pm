@@ -27,7 +27,7 @@ body {
   font: 15px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
-button, input, textarea { font: inherit; color: inherit; }
+button, input, textarea, select { font: inherit; color: inherit; }
 
 a { color: var(--green-dark); }
 
@@ -189,7 +189,7 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 
 label { display: block; margin: 12px 0 6px; font-weight: 600; }
 
-input, textarea {
+input, textarea, select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -261,7 +261,7 @@ td a { white-space: nowrap; }
 }
 .toast.err { background: var(--red); }
 
-button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible {
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: 2px solid var(--green);
   outline-offset: 2px;
 }
