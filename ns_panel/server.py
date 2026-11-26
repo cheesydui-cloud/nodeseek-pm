@@ -38,6 +38,7 @@ from ns_panel.posts import (
     validate_keywords,
     normalize_boards,
 )
+from ns_panel.water import parse_phrases, validate_water_settings, water_status_line
 from ns_panel.schedule import in_quiet_hours, valid_hhmm
 from ns_panel.store import Store
 from ns_panel.botview import reply_keyboard
@@ -429,6 +430,9 @@ def status_payload(app: App) -> dict:
         "keyword_interval": keyword_interval_seconds(store),
         "next_keyword_at": app.monitor.next_keyword_at,
         "login_required": panel_login_required(store),
+        "water_enabled": (store.get_setting("water_enabled") or "0") == "1",
+        "water_phrases_ready": len(parse_phrases(store.get_setting("water_phrases") or "")) >= 2,
+        "water_status": water_status_line(store),
     }
 
 
@@ -446,12 +450,78 @@ def settings_payload(store: Store) -> dict:
         "panel_user": user,
         "has_panel_password": bool(user and secret),
         "checkin_enabled": (store.get_setting("checkin_enabled", "1") or "1") != "0",
+        "water_enabled": (store.get_setting("water_enabled") or "0") == "1",
+        "water_daily": _water_daily(store),
+        "water_gap": _water_gap(store),
+        "water_phrases": store.get_setting("water_phrases") or "",
+        "water_status": water_status_line(store),
         "heartbeat_enabled": (store.get_setting("heartbeat_enabled", "1") or "1") != "0",
         "heartbeat_hour": _heartbeat_hour(store),
         "quiet_enabled": (store.get_setting("quiet_enabled") or "0") == "1",
         "quiet_start": store.get_setting("quiet_start") or "23:00",
         "quiet_end": store.get_setting("quiet_end") or "08:00",
     }
+
+
+def _water_daily(store: Store) -> int:
+    try:
+        value = int(store.get_setting("water_daily") or "3")
+    except ValueError:
+        value = 3
+    return max(1, min(value, 5))
+
+
+def _water_gap(store: Store) -> int:
+    try:
+        value = int(store.get_setting("water_gap") or "10")
+    except ValueError:
+        value = 10
+    return max(10, min(value, 240))
+
+
+def _bounded_water_daily(raw) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 3
+    return max(1, min(value, 5))
+
+
+def _bounded_water_gap(raw) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 10
+    return max(10, min(value, 240))
+
+
+def _prepare_water(store: Store, data: dict) -> str | None:
+    keys = ("water_enabled", "water_daily", "water_gap", "water_phrases")
+    if not any(key in data for key in keys):
+        return None
+    enabled = data.get("water_enabled") if "water_enabled" in data else (store.get_setting("water_enabled") == "1")
+    phrases = parse_phrases(
+        str(data.get("water_phrases") if "water_phrases" in data else (store.get_setting("water_phrases") or ""))
+    )
+    daily = _bounded_water_daily(data.get("water_daily") if "water_daily" in data else _water_daily(store))
+    gap = _bounded_water_gap(data.get("water_gap") if "water_gap" in data else _water_gap(store))
+    if "water_daily" in data:
+        try:
+            asked = int(data.get("water_daily"))
+        except (TypeError, ValueError):
+            return "每天条数必须是数字"
+        if asked < 1 or asked > 5:
+            return "每天条数要在 1 到 5 之间"
+        daily = asked
+    if "water_gap" in data:
+        try:
+            asked_gap = int(data.get("water_gap"))
+        except (TypeError, ValueError):
+            return "间隔分钟必须是数字"
+        if asked_gap < 10 or asked_gap > 240:
+            return "间隔要在 10 到 240 分钟之间"
+        gap = asked_gap
+    return validate_water_settings(bool(enabled), phrases, daily, gap)
 
 
 def update_settings(store: Store, data: dict) -> str | None:
@@ -483,6 +553,9 @@ def update_settings(store: Store, data: dict) -> str | None:
                 token = ""
             else:
                 return "Bot Token 格式不对，一般是一串数字、冒号，再加一串字符。"
+    water_error = _prepare_water(store, data)
+    if water_error:
+        return water_error
     if interval is not None:
         store.set_setting("interval", str(interval))
     if keyword_interval is not None:
@@ -514,6 +587,14 @@ def update_settings(store: Store, data: dict) -> str | None:
             store.set_setting("tg_chat_id", chat_id)
     if "checkin_enabled" in data:
         store.set_setting("checkin_enabled", "1" if data.get("checkin_enabled") else "0")
+    if "water_enabled" in data:
+        store.set_setting("water_enabled", "1" if data.get("water_enabled") else "0")
+    if "water_daily" in data:
+        store.set_setting("water_daily", str(_bounded_water_daily(data.get("water_daily"))))
+    if "water_gap" in data:
+        store.set_setting("water_gap", str(_bounded_water_gap(data.get("water_gap"))))
+    if "water_phrases" in data:
+        store.set_setting("water_phrases", "\n".join(parse_phrases(str(data.get("water_phrases") or ""))))
     if "heartbeat_enabled" in data:
         store.set_setting("heartbeat_enabled", "1" if data.get("heartbeat_enabled") else "0")
     if "heartbeat_hour" in data and str(data.get("heartbeat_hour") or "").strip() != "":

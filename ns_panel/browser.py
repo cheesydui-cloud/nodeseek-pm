@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 import threading
 import time
@@ -18,6 +19,7 @@ from ns_panel.nodeseek import (
     CloudflareError,
     Member,
     extract_member,
+    looks_like_challenge,
     read_api,
 )
 
@@ -231,23 +233,51 @@ class BrowserClient:
         status, content_type, text = self._fetch(path)
         return read_api(status, content_type, text, BROWSER_BLOCKED, BROWSER_AUTH)
 
-    def post_json(self, path: str):
+    def post_json(self, path: str, body: dict | None = None):
         self.ensure_window()
-        status, content_type, text = self._fetch(path, method="POST")
+        status, content_type, text = self._fetch(path, method="POST", body=body)
         return read_api(status, content_type, text, BROWSER_BLOCKED, BROWSER_AUTH)
+
+    def get_text(self, path: str) -> str:
+        self.ensure_window()
+        status, content_type, text = self._fetch(path)
+        if looks_like_challenge(status, text, content_type):
+            raise CloudflareError(BROWSER_BLOCKED)
+        if status >= 400 or not text:
+            raise ApiError(f"HTTP {status}")
+        return text
+
+    def list_water_targets(self):
+        from ns_panel.water import WATER_PATH, parse_water_board
+
+        return parse_water_board(self.get_text(WATER_PATH))
+
+    def comment(self, post_id: int, content: str) -> dict:
+        from ns_panel.water import COMMENT_PATH
+
+        return self.post_json(
+            COMMENT_PATH,
+            {"content": content, "mode": "new-comment", "postId": int(post_id)},
+        )
 
     def check_in(self) -> dict:
         return self.post_json("/api/attendance?random=false")
 
-    def _fetch(self, path: str, method: str = "GET") -> tuple[int, str, str]:
+    def _fetch(self, path: str, method: str = "GET", body: dict | None = None) -> tuple[int, str, str]:
+        headers = {"Accept": "application/json, text/plain, */*"}
+        js_body = "undefined"
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            headers["csrf-token"] = _csrf_token()
+            js_body = json.dumps(json.dumps(body, ensure_ascii=False))
         expression = (
             "(async () => {"
             "const ctrl = new AbortController();"
             "const timer = setTimeout(() => ctrl.abort(), 8000);"
             "try {"
-            f"const res = await fetch({json.dumps(path)}, "
-            f"{{method: {json.dumps(method)}, credentials: 'include', signal: ctrl.signal, "
-            "headers: {'Accept': 'application/json, text/plain, */*'}});"
+            f"const res = await fetch({json.dumps(path)}, {{"
+            f"method: {json.dumps(method)}, credentials: 'include', signal: ctrl.signal, "
+            f"headers: {json.dumps(headers, ensure_ascii=False)}, body: {js_body}}});"
             "const text = await res.text();"
             "return JSON.stringify({status: res.status, type: res.headers.get('content-type') || '', "
             "text: text.slice(0, 500000)});"
@@ -268,6 +298,11 @@ class BrowserClient:
             return int(parsed.get("status") or 0), str(parsed.get("type") or ""), str(parsed.get("text") or "")
 
         return run_with_retry(action, lambda: _wake_target(self.port))
+
+
+def _csrf_token() -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    return "".join(secrets.choice(alphabet) for _ in range(16))
 
 
 class SessionDown(Exception):

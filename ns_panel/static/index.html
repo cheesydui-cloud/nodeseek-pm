@@ -263,6 +263,28 @@
           </section>
 
           <section class="panel">
+            <h2>水贴</h2>
+            <p class="muted note">监控开着、并且打开这个开关时，在灌水区发你写好的短回复。灌水区就是公开页的无意义。默认关。只走登录浏览器。每天最多 5 条，两条至少隔 10 分钟。不碰交易帖和关键词命中的帖。失败过半小时再试，不影响私信。</p>
+            <label class="checkline" for="water-enabled">
+              <input id="water-enabled" name="water_enabled" type="checkbox">
+              每天在灌水区发短回复
+            </label>
+            <div class="pair">
+              <div>
+                <label for="water-daily">每天几条</label>
+                <input id="water-daily" name="water_daily" type="number" min="1" max="5" value="3">
+              </div>
+              <div>
+                <label for="water-gap">间隔分钟</label>
+                <input id="water-gap" name="water_gap" type="number" min="10" max="240" value="10">
+              </div>
+            </div>
+            <label for="water-phrases">短回复，每行一句</label>
+            <textarea id="water-phrases" name="water_phrases" rows="4" spellcheck="false" placeholder="路过看看&#10;学习了"></textarea>
+            <p id="water-status" class="muted">关着</p>
+          </section>
+
+          <section class="panel">
             <h2>每天一条存活消息</h2>
             <p class="muted note">容器停了，它自己发不出故障告警。到了下面的小时还没发过，就发一条“监控还在跑”。这一天没收到，就去看服务器。</p>
             <label class="checkline" for="heartbeat-enabled">

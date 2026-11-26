@@ -10,6 +10,7 @@ from ns_panel.posts import (
     parse_keyword_rules,
     validate_keywords,
 )
+from ns_panel.water import water_status_line
 
 
 OWNER_HINT = "点下面的按钮查看记录。"
@@ -265,6 +266,7 @@ def _status_text(store, running: bool) -> str:
         f"今天已推送：{store.count_pushes_today()} 条",
         f"间隔：私信 {interval_seconds(store)} 秒，关键词 {keyword_interval_seconds(store)} 秒",
         f"今日签到：{store.get_state('checkin_result') or '还没有'}",
+        f"今日水贴：{water_status_line(store)}",
     ]
     error = (store.get_state("last_error") or "").strip()
     if error:

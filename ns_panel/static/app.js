@@ -164,6 +164,16 @@ function renderStatus(data) {
   } else if (data.running && data.has_keywords && !data.posts_baseline_done) {
     banners.push(`<div class="banner warn">关键词还没有基线。第一次成功检索只会记住当前帖子，不会把历史帖推出去。</div>`);
   }
+  if (data.water_enabled && data.auth_mode !== "browser") {
+    banners.push(`<div class="banner warn">水贴只走登录浏览器。请到「设置」打开登录浏览器并登录。</div>`);
+  } else if (data.water_enabled && !data.browser_open) {
+    banners.push(`<div class="banner warn">水贴开了，但登录浏览器没开。请到「设置」打开登录浏览器。</div>`);
+  }
+  if (data.water_enabled && !data.water_phrases_ready) {
+    banners.push(`<div class="banner warn">水贴开了，但短回复还不够。请到「设置」里至少写两句。</div>`);
+  }
+  const waterStatus = $("#water-status");
+  if (waterStatus && data.water_status) waterStatus.textContent = data.water_status;
   $("#overview-banners").innerHTML = banners.join("");
 
   if (data.running && (data.next_check_at || data.next_keyword_at)) {
@@ -377,6 +387,11 @@ async function loadSettings() {
   savedToken = Boolean(data.has_token);
   $("#tg-chat-id").value = data.tg_chat_id || "";
   $("#checkin-enabled").checked = data.checkin_enabled !== false;
+  $("#water-enabled").checked = Boolean(data.water_enabled);
+  $("#water-daily").value = data.water_daily ?? 3;
+  $("#water-gap").value = data.water_gap ?? 10;
+  $("#water-phrases").value = data.water_phrases || "";
+  $("#water-status").textContent = data.water_status || "关着";
   $("#heartbeat-enabled").checked = data.heartbeat_enabled !== false;
   $("#heartbeat-hour").value = data.heartbeat_hour ?? 9;
   $("#quiet-enabled").checked = Boolean(data.quiet_enabled);
@@ -467,6 +482,10 @@ $("#settings-form").addEventListener("submit", (event) => {
       keyword_interval: Number($("#keyword-interval").value),
       tg_chat_id: $("#tg-chat-id").value.trim(),
       checkin_enabled: $("#checkin-enabled").checked,
+      water_enabled: $("#water-enabled").checked,
+      water_daily: Number($("#water-daily").value),
+      water_gap: Number($("#water-gap").value),
+      water_phrases: $("#water-phrases").value,
       heartbeat_enabled: $("#heartbeat-enabled").checked,
       heartbeat_hour: Number($("#heartbeat-hour").value),
       quiet_enabled: $("#quiet-enabled").checked,

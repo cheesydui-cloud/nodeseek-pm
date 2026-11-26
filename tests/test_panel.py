@@ -30,6 +30,13 @@ from datetime import datetime
 from ns_panel.posts import Post, parse_category_html, parse_keyword_rules, parse_keywords, parse_rss, plan_posts
 from ns_panel.replies import format_reply_alerts, parse_replies
 from ns_panel.schedule import heartbeat_due, in_quiet_hours
+from ns_panel.water import (
+    WaterTarget,
+    describe_comment,
+    parse_phrases,
+    parse_water_board,
+    pick_water_target,
+)
 from ns_panel.nodeseek import NodeSeekClient
 from ns_panel.pages import notification_path
 from ns_panel.server import App, create_httpd, panel_authorized
@@ -204,6 +211,22 @@ class FakeClient:
         if self.box.get("checkin_error"):
             raise self.box["checkin_error"]
         return self.box.get("checkin", {"success": True, "message": "签到成功", "gain": 5})
+
+    def list_water_targets(self):
+        self.box["water_list_calls"] = self.box.get("water_list_calls", 0) + 1
+        if self.box.get("water_list_error"):
+            raise self.box["water_list_error"]
+        return list(self.box.get("water_targets") or [])
+
+    def comment(self, post_id, content):
+        self.box["comment_calls"] = self.box.get("comment_calls", 0) + 1
+        self.box.setdefault("comments", []).append((post_id, content))
+        if self.box.get("comment_error"):
+            raise self.box["comment_error"]
+        payload = self.box.get("comment_payload")
+        if isinstance(payload, list):
+            return payload[min(self.box["comment_calls"] - 1, len(payload) - 1)]
+        return payload or {"success": True, "message": "评论成功"}
 
 
 def mention_row(
@@ -571,6 +594,111 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(self.store.get_state("checkin_day"), "2026-11-25")
         self.assertIn("获得 5", self.store.get_state("checkin_result"))
 
+    def _arm_water(self, daily="1"):
+        self.store.set_setting("auth_mode", "browser")
+        self.store.set_setting("water_enabled", "1")
+        self.store.set_setting("water_phrases", "路过看看\n学习了")
+        self.store.set_setting("water_daily", daily)
+        self.store.set_setting("checkin_enabled", "0")
+        self.store.set_state("self_id", "9")
+        self.monitor.browser_client_factory = lambda: FakeClient("browser", self.box)
+        self.monitor.clock = lambda: datetime(2026, 11, 26, 9, 0)
+        self.box["water_targets"] = [
+            WaterTarget(15, "随便聊聊", 5, datetime(2026, 11, 26, 8, 0)),
+        ]
+
+    def test_water_is_off_by_default_and_waits_for_checkin(self):
+        self.monitor._maybe_water()
+        self.assertNotIn("comment_calls", self.box)
+        self._arm_water()
+        self.store.set_setting("checkin_enabled", "1")
+        self.monitor._maybe_water()
+        self.assertNotIn("comment_calls", self.box)
+        self.store.set_state("checkin_day", "2026-11-26")
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comment_calls"], 1)
+
+    def test_water_posts_one_then_stops_at_the_daily_cap(self):
+        self._arm_water("1")
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comments"], [(15, "路过看看")])
+        self.assertEqual(self.store.get_state("water_stopped"), "1")
+        self.assertEqual(self.store.get_state("last_error") or "", "")
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("NodeSeek 水贴", self.sent[0][2])
+        self.assertIn("今天发了 1 条", self.sent[0][2])
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comment_calls"], 1)
+
+    def test_water_skips_own_trade_keyword_and_old_posts(self):
+        self._arm_water("3")
+        self.store.set_setting("keywords", "家宽")
+        now = datetime(2026, 11, 26, 9, 0)
+        self.box["water_targets"] = [
+            WaterTarget(11, "自己的帖", 9, now),
+            WaterTarget(12, "只读", 2, now, read_only=True),
+            WaterTarget(13, "旧帖", 3, datetime(2026, 11, 20, 0, 0)),
+            WaterTarget(14, "美西家宽出", 4, now),
+            WaterTarget(16, "交易帖", 6, now, category="trade"),
+            WaterTarget(15, "随便聊聊", 5, now),
+            WaterTarget(17, "再聊一句", 8, now),
+        ]
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comments"], [(15, "路过看看")])
+        self.assertEqual(self.sent, [])
+        self.store.delete_state("water_next_at")
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comments"][1], (17, "学习了"))
+
+    def test_water_site_limit_stops_until_tomorrow_without_touching_inbox_error(self):
+        self._arm_water("3")
+        self.box["comment_payload"] = {"success": False, "message": "今日水贴次数已达上限"}
+        self.monitor._maybe_water()
+        self.assertEqual(self.store.get_state("water_stopped"), "1")
+        self.assertEqual(self.store.get_state("water_count"), "0")
+        self.assertIn("上限", self.sent[0][2])
+        self.assertEqual(self.store.get_state("last_error") or "", "")
+        self.store.delete_state("water_next_at")
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comment_calls"], 1)
+
+    def test_water_failure_waits_and_cookie_mode_does_not_comment(self):
+        self._arm_water("3")
+        self.box["comment_error"] = CloudflareError("被 Cloudflare 拦住")
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comment_calls"], 1)
+        self.assertIsNone(self.store.get_state("water_stopped"))
+        self.assertIn("Cloudflare", self.store.get_state("water_last_error"))
+        self.assertEqual(self.store.get_state("last_error") or "", "")
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comment_calls"], 1)
+
+        self.store.delete_state("water_next_at")
+        self.store.delete_state("water_last_error")
+        self.store.set_setting("auth_mode", "cookie")
+        self.box.pop("comment_error")
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comment_calls"], 1)
+        self.assertIn("登录浏览器", self.store.get_state("water_last_error"))
+
+    def test_water_new_day_ignores_yesterdays_stop(self):
+        self._arm_water("2")
+        self.store.set_state("water_day", "2026-11-25")
+        self.store.set_state("water_stopped", "1")
+        self.store.set_state("water_count", "2")
+        self.box["water_targets"] = [
+            WaterTarget(15, "随便聊聊", 5, datetime(2026, 11, 26, 8, 0)),
+            WaterTarget(17, "再聊一句", 8, datetime(2026, 11, 26, 8, 10)),
+        ]
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comments"], [(15, "路过看看")])
+        self.assertIsNone(self.store.get_state("water_stopped"))
+        self.store.delete_state("water_next_at")
+        self.monitor._maybe_water()
+        self.assertEqual(self.box["comments"][1], (17, "学习了"))
+        self.assertEqual(self.store.get_state("water_stopped"), "1")
+        self.assertEqual(self.store.get_state("water_count"), "2")
+
     def test_baseline_reads_only_first_page(self):
         self.box["mention_payloads"] = {
             1: {"data": [mention_row(10, title="当前")]},
@@ -742,6 +870,8 @@ class MonitorTest(unittest.TestCase):
         status = answer_for("状态", self.store, False)["text"]
         self.assertIn("没在跑", status)
         self.assertIn("今日签到：还没有", status)
+        self.assertIn("今日水贴：关着", status)
+        self.assertNotIn("水贴", " ".join(button["text"] for row in keyboard for button in row))
         self.assertIsNone(answer_for("随便说", self.store, False))
         self.assertEqual(answer_for("回复", self.store, True)["text"], "还没有回复。")
 
@@ -862,6 +992,8 @@ class ServerTest(unittest.TestCase):
         self.assertIn("提到我", html)
         self.assertIn("docker-desktop-note", html)
         self.assertIn("每天自动签到", html)
+        self.assertIn("水贴", html)
+        self.assertIn("每天在灌水区发短回复", html)
         status, css = self.get("/static/app.css")
         self.assertEqual(status, 200)
         self.assertIn(".sidebar", css)
@@ -893,6 +1025,24 @@ class ServerTest(unittest.TestCase):
         code, on = self.post("/api/settings", {"checkin_enabled": True})
         self.assertEqual(code, 200)
         self.assertTrue(on["checkin_enabled"])
+        self.assertFalse(on["water_enabled"])
+        code, missing = self.post("/api/settings", {"water_enabled": True, "water_phrases": "只有一句"})
+        self.assertEqual(code, 400)
+        self.assertIn("两句", missing["error"])
+        code, tight = self.post("/api/settings", {"water_enabled": True, "water_gap": 5, "water_phrases": "甲\n乙"})
+        self.assertEqual(code, 400)
+        self.assertIn("10", tight["error"])
+        code, watered = self.post(
+            "/api/settings",
+            {"water_enabled": True, "water_daily": 3, "water_gap": 10, "water_phrases": "路过看看\n学习了"},
+        )
+        self.assertEqual(code, 200)
+        self.assertTrue(watered["water_enabled"])
+        self.assertEqual(watered["water_daily"], 3)
+        self.assertEqual(watered["water_phrases"], "路过看看\n学习了")
+        code, kept_water = self.post("/api/settings", {"interval": 40})
+        self.assertEqual(code, 200)
+        self.assertTrue(kept_water["water_enabled"])
         code, status_body = self.post("/api/monitor/start", {})
         self.assertEqual(code, 400)
         self.assertIn("Telegram", status_body["error"])
@@ -965,6 +1115,71 @@ def make_post(post_id, title, excerpt="", category="daily"):
         published_at="2026-11-08 12:00",
         excerpt=excerpt,
     )
+
+
+WATER_HTML = """
+<ul class="post-list">
+  <li class="post-list-item">
+    <a href="/space/9"><img alt="me" data-uid="9"></a>
+    <div class="post-title"><a href="/post-11-1">自己的帖</a></div>
+    <time datetime="2026-11-26T01:00:00.000Z"></time>
+    <a href="/categories/meaningless">无意义</a>
+  </li>
+  <li class="post-list-item">
+    <img data-uid="2">
+    <div class="post-title"><a href="/post-12-1">只读帖</a> <span class="nsk-badge read-only">只读</span></div>
+    <time datetime="2026-11-26T01:00:00.000Z"></time>
+    <a href="/categories/meaningless">无意义</a>
+  </li>
+  <li class="post-list-item">
+    <img data-uid="4">
+    <div class="post-title"><a href="/post-15-1" target="">随便聊聊</a></div>
+    <a href="/post-15-1#1"><time datetime="2026-11-25T16:55:53.000Z">8h ago</time></a>
+    <a href="/categories/meaningless">无意义</a>
+  </li>
+  <li class="post-list-item">
+    <img data-uid="6">
+    <div class="post-title"><a href="/post-16-1">交易帖</a></div>
+    <time datetime="2026-11-26T01:00:00.000Z"></time>
+    <a href="/categories/trade">交易</a>
+  </li>
+</ul>
+"""
+
+
+class WaterParseTest(unittest.TestCase):
+    def test_board_parser_keeps_author_activity_and_read_only(self):
+        found = parse_water_board(WATER_HTML)
+        self.assertEqual([item.post_id for item in found], [11, 12, 15, 16])
+        self.assertEqual(found[0].author_id, 9)
+        self.assertTrue(found[1].read_only)
+        self.assertFalse(found[2].read_only)
+        self.assertEqual(found[2].category, "meaningless")
+        self.assertEqual(found[3].category, "trade")
+        self.assertIsNotNone(found[2].active_at)
+        chosen = pick_water_target(
+            found,
+            self_id=9,
+            watered=set(),
+            now=datetime(2026, 11, 26, 9, 0, tzinfo=found[2].active_at.tzinfo),
+            rules=[],
+            excludes=[],
+            boards=["meaningless"],
+        )
+        self.assertEqual(chosen.post_id, 15)
+
+    def test_comment_result_stops_on_site_limits(self):
+        self.assertTrue(describe_comment({"success": True, "message": "评论成功"}).ok)
+        stopped = describe_comment({"success": False, "message": "今日水贴次数已达上限"})
+        self.assertTrue(stopped.stop_today)
+        self.assertFalse(stopped.ok)
+        for word in ("评论过", "太频繁", "重复"):
+            self.assertTrue(describe_comment({"success": False, "message": word}).stop_today)
+        retry = describe_comment({"success": False, "message": "请稍后再试"})
+        self.assertFalse(retry.ok)
+        self.assertFalse(retry.stop_today)
+        phrases = parse_phrases("  路过看看  \n路过看看\n\n学习了 ")
+        self.assertEqual(phrases, ["路过看看", "学习了"])
 
 
 class PostParseTest(unittest.TestCase):

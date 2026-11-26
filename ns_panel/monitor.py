@@ -50,6 +50,13 @@ from ns_panel.replies import format_reply_alerts, parse_replies, plan_replies
 from ns_panel.schedule import heartbeat_due, in_quiet_hours
 from ns_panel.store import Store
 from ns_panel.telegram import TelegramError, get_updates, send_message
+from ns_panel.water import (
+    RETRY_SECONDS as WATER_RETRY_SECONDS,
+    describe_comment,
+    next_phrase,
+    parse_phrases,
+    pick_water_target,
+)
 
 
 MIN_INTERVAL = 10
@@ -65,6 +72,22 @@ BROWSER_RETRY_SECONDS = 20
 BROWSER_ALERT_SECONDS = 180
 AWAKE_MISSES = 9
 CHECK_MARK = "/tmp/ns-checking"
+
+
+def _water_daily(store: Store) -> int:
+    try:
+        value = int(store.get_setting("water_daily") or "3")
+    except ValueError:
+        value = 3
+    return max(1, min(value, 5))
+
+
+def _water_gap_minutes(store: Store) -> int:
+    try:
+        value = int(store.get_setting("water_gap") or "10")
+    except ValueError:
+        value = 10
+    return max(10, min(value, 240))
 
 
 def _bounded_interval(raw: str | None, default: int, minimum: int) -> int:
@@ -234,6 +257,7 @@ class Monitor:
                         next_keyword = time.time() + delay
                 self._maybe_heartbeat()
                 self._maybe_checkin()
+                self._maybe_water()
                 self.next_check_at = next_inbox
                 self.next_keyword_at = next_keyword
                 wait = min(next_inbox, next_keyword) - time.time()
@@ -990,6 +1014,144 @@ class Monitor:
             return
         self.store.set_state("checkin_last_error", message)
         self.log("error", f"签到还没完成：{message}")
+
+    def _maybe_water(self) -> None:
+        if (self.store.get_setting("water_enabled") or "0") != "1":
+            return
+        today = self.clock().date().isoformat()
+        if self.store.get_state("water_day") != today:
+            self.store.delete_state("water_stopped")
+        if self.store.get_state("water_day") == today and self.store.get_state("water_stopped") == "1":
+            return
+        if not self._checkin_attempted(today):
+            return
+        raw = self.store.get_state("water_next_at") or ""
+        try:
+            if time.time() < float(raw):
+                return
+        except ValueError:
+            pass
+        if self._cooling_message():
+            return
+        with self._check_hold(0) as held:
+            if not held:
+                return
+            self._water_once(today)
+
+    def _checkin_attempted(self, today: str) -> bool:
+        if (self.store.get_setting("checkin_enabled", "1") or "1") == "0":
+            return True
+        if self.store.get_state("checkin_day") == today:
+            return True
+        return bool(self.store.get_state("checkin_last_error") or self.store.get_state("checkin_retry_at"))
+
+    def _water_once(self, today: str) -> None:
+        if auth_mode(self.store) != "browser":
+            self._note_water("水贴只走登录浏览器。请到设置打开登录浏览器。")
+            return
+        phrases = parse_phrases(self.store.get_setting("water_phrases") or "")
+        if len(phrases) < 2:
+            self._note_water("短回复至少要两句，水贴先停着。")
+            return
+        self_raw = self.store.get_state("self_id") or ""
+        if not self_raw.isdigit():
+            self._note_water("还没识别当前账号，水贴先等一次成功检查。")
+            return
+        daily = _water_daily(self.store)
+        count = self._water_count(today)
+        if count >= daily:
+            self._finish_water(today, count, "今天的条数已经发完。")
+            return
+        try:
+            client = self.browser_client_factory()
+            targets = client.list_water_targets()
+        except (AuthError, CloudflareError, ApiError, ValueError) as exc:
+            self._note_water(str(exc))
+            return
+        rules, excludes = self._keyword_rules()
+        chosen = pick_water_target(
+            targets,
+            self_id=int(self_raw),
+            watered=self._water_ids(today),
+            now=self.clock(),
+            rules=rules,
+            excludes=excludes,
+            boards=selected_slugs(self.store.get_setting("boards")),
+        )
+        if chosen is None:
+            self._note_water("灌水区这页没有能发的帖，过半小时再看。")
+            return
+        try:
+            index = int(self.store.get_state("water_phrase_index") or "0")
+        except ValueError:
+            index = 0
+        phrase, next_index = next_phrase(phrases, index)
+        try:
+            payload = client.comment(chosen.post_id, phrase)
+        except (AuthError, CloudflareError, ApiError, ValueError) as exc:
+            self._note_water(str(exc))
+            return
+        outcome = describe_comment(payload)
+        if outcome.ok:
+            count += 1
+            ids = self._water_ids(today)
+            ids.append(chosen.post_id)
+            self.store.set_state("water_day", today)
+            self.store.set_state("water_count", str(count))
+            self.store.set_state("water_ids", ",".join(str(item) for item in ids))
+            self.store.set_state("water_phrase_index", str(next_index))
+            self.store.set_state("water_result", f"今天已发 {count} 条。站点：{outcome.message}"[:300])
+            self.store.delete_state("water_last_error")
+            self.store.delete_state("water_stopped")
+            self.log("info", f"水贴已发 1 条，今天 {count} 条。")
+        if outcome.stop_today or count >= daily:
+            self._finish_water(today, count, outcome.message)
+            return
+        if not outcome.ok:
+            self._note_water(outcome.message)
+            return
+        self.store.set_state("water_next_at", str(time.time() + _water_gap_minutes(self.store) * 60))
+
+    def _finish_water(self, today: str, count: int, site_message: str) -> None:
+        self.store.set_state("water_day", today)
+        self.store.set_state("water_stopped", "1")
+        self.store.set_state("water_count", str(count))
+        self.store.delete_state("water_next_at")
+        self.store.delete_state("water_last_error")
+        text = f"今天发了 {count} 条，已停到明天。"
+        if site_message:
+            text = text + "\n站点：" + site_message
+        self.store.set_state("water_result", text[:300])
+        self.store.add_event("info", "水贴", text)
+        self.log("info", f"水贴：{text.replace(chr(10), ' ')}")
+        try:
+            self._send("NodeSeek 水贴\n" + text)
+        except TelegramError as exc:
+            self.log("error", f"水贴结果没有发出去：{exc}")
+
+    def _note_water(self, message: str) -> None:
+        self.store.set_state("water_next_at", str(time.time() + WATER_RETRY_SECONDS))
+        if self.store.get_state("water_last_error") == message:
+            return
+        self.store.set_state("water_last_error", message)
+        self.log("error", f"水贴还没完成：{message}")
+
+    def _water_count(self, today: str) -> int:
+        if self.store.get_state("water_day") != today:
+            return 0
+        try:
+            return int(self.store.get_state("water_count") or "0")
+        except ValueError:
+            return 0
+
+    def _water_ids(self, today: str) -> list[int]:
+        if self.store.get_state("water_day") != today:
+            return []
+        found = []
+        for part in (self.store.get_state("water_ids") or "").split(","):
+            if part.strip().isdigit():
+                found.append(int(part))
+        return found
 
     def _note_post_error(self, message: str) -> str:
         shown = RSS_WAIT if _rss_connect_failure(message) else message
