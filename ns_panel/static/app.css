@@ -211,7 +211,48 @@ textarea { resize: vertical; font-family: Consolas, "Cascadia Mono", monospace; 
 .steps li + li { margin-top: 4px; }
 
 .section-gap { margin-top: 18px; }
-#upgrade-panel { margin-bottom: 16px; }
+
+.settings-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin-bottom: 16px;
+  padding-bottom: 2px;
+}
+
+.settings-tab {
+  flex: none;
+  border-radius: 999px;
+  background: white;
+}
+
+.settings-tab.active {
+  background: var(--green);
+  border-color: var(--green);
+  color: white;
+}
+
+.settings-pane[hidden] { display: none; }
+.settings-pane.active { display: block; }
+.settings-pane.stack.active { display: flex; flex-direction: column; gap: 14px; }
+
+.settings-save {
+  position: sticky;
+  bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+
+.settings-save[hidden] { display: none; }
+.settings-save p { margin: 0; }
 
 .checkline {
   display: flex;

@@ -9,7 +9,7 @@
 services:
   nodeseek-pm:
     build: .
-    image: nodeseek-pm:0.7.12
+    image: nodeseek-pm:0.7.13
     pull_policy: never
     container_name: ${PANEL_CONTAINER:-nodeseek-pm}
     restart: unless-stopped
@@ -50,7 +50,7 @@ services:
 
   # 面板容器自己挂了就发不出每日存活消息。这个服务在外面看 /health。
   nodeseek-watch:
-    image: nodeseek-pm:0.7.12
+    image: nodeseek-pm:0.7.13
     pull_policy: never
     container_name: ${WATCH_CONTAINER:-nodeseek-watch}
     restart: unless-stopped

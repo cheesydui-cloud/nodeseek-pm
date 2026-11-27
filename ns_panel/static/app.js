@@ -4,7 +4,7 @@ const titles = {
   mentions: ["提到我", "有人在帖子里@你时，列出来并推送到 Telegram。"],
   replies: ["回复我", "有人回复你的帖子时，列出来并推送到 Telegram。"],
   keywords: ["关键词", "新帖标题或摘要里出现关键词时，列出来并推送到 Telegram。"],
-  settings: ["设置", "面板账号、登录浏览器、Telegram、检查间隔，以及升级。"],
+  settings: ["设置", "按模块分开。账号、升级、登录、Telegram、签到水贴和监控各在一个标签里。"],
   logs: ["日志", "本机运行记录，不会上传。"],
 };
 
@@ -73,6 +73,30 @@ function post(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
   });
+}
+
+const settingsTabs = ["account", "upgrade", "login", "telegram", "daily", "monitor"];
+const settingsFormTabs = new Set(["login", "telegram", "daily", "monitor"]);
+
+function showSettingsTab(name) {
+  const tab = settingsTabs.includes(name) ? name : "account";
+  document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+    const on = button.dataset.settingsTab === tab;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll("[data-settings-pane]").forEach((pane) => {
+    const on = pane.dataset.settingsPane === tab;
+    pane.classList.toggle("active", on);
+    pane.hidden = !on;
+  });
+  const save = document.querySelector(".settings-save");
+  if (save) save.hidden = !settingsFormTabs.has(tab);
+  try {
+    sessionStorage.setItem("ns-settings-tab", tab);
+  } catch (_error) {
+    /* 记住标签失败时仍切换当前页 */
+  }
 }
 
 function showPage(name) {
@@ -440,6 +464,18 @@ async function withButton(button, work) {
 document.querySelectorAll("[data-nav]").forEach((button) => {
   button.addEventListener("click", () => showPage(button.dataset.nav));
 });
+
+document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+  button.addEventListener("click", () => showSettingsTab(button.dataset.settingsTab));
+});
+
+let savedSettingsTab = "account";
+try {
+  savedSettingsTab = sessionStorage.getItem("ns-settings-tab") || "account";
+} catch (_error) {
+  savedSettingsTab = "account";
+}
+showSettingsTab(savedSettingsTab);
 
 $("#start-btn").addEventListener("click", () => withButton($("#start-btn"), async () => {
   await post("/api/monitor/start");

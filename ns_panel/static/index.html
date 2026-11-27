@@ -183,164 +183,185 @@
       </section>
 
       <section class="page" data-page="settings">
-        <form id="account-form" class="stack">
-          <section class="panel">
-            <h2>面板账号</h2>
-            <p class="muted note">这是打开这个页面时要填的账号。改成自己记得住的密码即可。网页桌面密码不在这里改。</p>
-            <label for="panel-user">账号</label>
-            <input id="panel-user" name="panel_user" autocomplete="username" maxlength="64">
-            <label for="current-password">当前密码</label>
-            <input id="current-password" type="password" autocomplete="current-password">
-            <label for="new-password">新密码</label>
-            <input id="new-password" type="password" autocomplete="new-password">
-            <label for="confirm-password">再输入一次新密码</label>
-            <input id="confirm-password" type="password" autocomplete="new-password">
+        <div class="settings-tabs" role="tablist" aria-label="设置模块">
+          <button type="button" class="settings-tab active" role="tab" id="settings-tab-account" data-settings-tab="account" aria-selected="true" aria-controls="settings-pane-account">账号</button>
+          <button type="button" class="settings-tab" role="tab" id="settings-tab-upgrade" data-settings-tab="upgrade" aria-selected="false" aria-controls="settings-pane-upgrade">升级</button>
+          <button type="button" class="settings-tab" role="tab" id="settings-tab-login" data-settings-tab="login" aria-selected="false" aria-controls="settings-pane-login">登录</button>
+          <button type="button" class="settings-tab" role="tab" id="settings-tab-telegram" data-settings-tab="telegram" aria-selected="false" aria-controls="settings-pane-telegram">Telegram</button>
+          <button type="button" class="settings-tab" role="tab" id="settings-tab-daily" data-settings-tab="daily" aria-selected="false" aria-controls="settings-pane-daily">签到水贴</button>
+          <button type="button" class="settings-tab" role="tab" id="settings-tab-monitor" data-settings-tab="monitor" aria-selected="false" aria-controls="settings-pane-monitor">监控</button>
+        </div>
+
+        <div class="settings-pane active" id="settings-pane-account" data-settings-pane="account" role="tabpanel" aria-labelledby="settings-tab-account">
+          <form id="account-form" class="stack">
+            <section class="panel">
+              <h2>面板账号</h2>
+              <p class="muted note">这是打开这个页面时要填的账号。改成自己记得住的密码即可。网页桌面密码不在这里改。</p>
+              <label for="panel-user">账号</label>
+              <input id="panel-user" name="panel_user" autocomplete="username" maxlength="64">
+              <label for="current-password">当前密码</label>
+              <input id="current-password" type="password" autocomplete="current-password">
+              <label for="new-password">新密码</label>
+              <input id="new-password" type="password" autocomplete="new-password">
+              <label for="confirm-password">再输入一次新密码</label>
+              <input id="confirm-password" type="password" autocomplete="new-password">
+              <div class="actions">
+                <button type="submit" class="primary">保存账号</button>
+              </div>
+            </section>
+          </form>
+        </div>
+
+        <div class="settings-pane" id="settings-pane-upgrade" data-settings-pane="upgrade" role="tabpanel" aria-labelledby="settings-tab-upgrade" hidden>
+          <section class="panel" id="upgrade-panel">
+            <h2>升级</h2>
+            <p class="muted note">从 GitHub 下载新版本，在这台机器上构建镜像，然后重启这一套容器。不会从 Docker Hub 拉取，也不会改端口、密码和登录数据。1Panel 的编排目录即使不让面板用户写入，也会继续换上新镜像。</p>
+            <p id="upgrade-status" class="muted">打开这一页时会检查有没有新版本。</p>
             <div class="actions">
-              <button type="submit" class="primary">保存账号</button>
+              <button type="button" id="upgrade-check-btn">检查更新</button>
+              <button type="button" id="upgrade-btn" class="primary" disabled>升级</button>
             </div>
           </section>
-        </form>
-        <section class="panel section-gap" id="upgrade-panel">
-          <h2>升级</h2>
-          <p class="muted note">从 GitHub 下载新版本，在这台机器上构建镜像，然后重启这一套容器。不会从 Docker Hub 拉取，也不会改端口、密码和登录数据。1Panel 的编排目录即使不让面板用户写入，也会继续换上新镜像。</p>
-          <p id="upgrade-status" class="muted">打开这一页时会检查有没有新版本。</p>
-          <div class="actions">
-            <button type="button" id="upgrade-check-btn">检查更新</button>
-            <button type="button" id="upgrade-btn" class="primary" disabled>升级</button>
+        </div>
+
+        <form id="settings-form">
+          <div class="settings-pane stack" id="settings-pane-login" data-settings-pane="login" role="tabpanel" aria-labelledby="settings-tab-login" hidden>
+            <section class="panel">
+              <h2>登录浏览器</h2>
+              <p id="browser-note" class="muted note">复制出来的 Cookie 和这个程序对不上，Cloudflare 会过一会儿就拦住。点下面的按钮会弹出一个专用 Edge。在那个窗口登录一次，并保持窗口开着。窗口可以最小化，程序会保持页面在线。</p>
+              <p id="docker-desktop-note" class="muted note" hidden>登录浏览器跑在这个容器里。点「打开网页桌面」，在新页面登录 NodeSeek。密码仍是编排里的网页桌面密码。面板的反向代理需要允许 WebSocket，否则画面连不上。容器保持运行，监控就不会停。</p>
+              <p id="browser-state" class="muted"></p>
+              <div class="actions">
+                <a id="open-desktop-btn" class="button primary" href="/desktop/vnc.html?autoconnect=1&amp;resize=scale&amp;path=desktop/websockify" target="_blank" rel="noopener" hidden>打开网页桌面</a>
+                <button type="button" id="open-browser-btn" class="primary">打开登录浏览器</button>
+                <button type="button" id="test-browser-btn">测试登录窗口</button>
+                <button type="button" id="use-cookie-btn" class="ghost">仍用 Cookie</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <h2>备用：复制 Cookie</h2>
+              <p class="muted note">这种方式容易被拦住。优先用上面的登录浏览器。</p>
+              <ol class="steps">
+                <li>用浏览器登录 <a href="https://www.nodeseek.com" target="_blank" rel="noopener">nodeseek.com</a>。</li>
+                <li>按 F12，打开「网络」，刷新页面。</li>
+                <li>点一条发往 www.nodeseek.com 的请求，在请求标头里复制整段 Cookie。</li>
+                <li>不要用控制台的 document.cookie，登录态通常复制不到。</li>
+              </ol>
+              <label for="cookie">Cookie</label>
+              <textarea id="cookie" name="cookie" rows="6" spellcheck="false" placeholder="在这里粘贴 Cookie"></textarea>
+              <p id="cookie-state" class="muted"></p>
+              <div class="actions">
+                <button type="button" id="test-cookie-btn">测试 Cookie</button>
+                <button type="button" id="clear-cookie-btn" class="ghost">清除已保存的 Cookie</button>
+              </div>
+            </section>
           </div>
-        </section>
-        <form id="settings-form" class="stack">
-          <div class="actions form-start">
-            <button type="submit" class="primary">保存设置</button>
+
+          <div class="settings-pane stack" id="settings-pane-telegram" data-settings-pane="telegram" role="tabpanel" aria-labelledby="settings-tab-telegram" hidden>
+            <section class="panel">
+              <h2>Telegram</h2>
+              <ol class="steps">
+                <li>在 Telegram 搜索 @BotFather，发送 /newbot，按提示拿到 Token。</li>
+                <li>打开你的机器人，发送 /start。</li>
+                <li>把 Token 填到下面，点「获取 Chat ID」，再保存。</li>
+              </ol>
+              <label for="tg-token">Bot Token</label>
+              <input id="tg-token" name="ns_bot_token" type="text" autocomplete="off" spellcheck="false" readonly placeholder="留空则不修改。格式如 123456789:AA...">
+              <p id="token-state" class="muted"></p>
+              <label for="tg-chat-id">Chat ID</label>
+              <input id="tg-chat-id" name="tg_chat_id" type="text" autocomplete="off" placeholder="获取后会填到这里">
+              <div class="actions">
+                <button type="button" id="discover-btn">获取 Chat ID</button>
+                <button type="button" id="test-tg-btn">发送测试消息</button>
+                <button type="button" id="clear-token-btn" class="ghost">清除 Token</button>
+              </div>
+            </section>
           </div>
-          <section class="panel">
-            <h2>登录浏览器</h2>
-            <p id="browser-note" class="muted note">复制出来的 Cookie 和这个程序对不上，Cloudflare 会过一会儿就拦住。点下面的按钮会弹出一个专用 Edge。在那个窗口登录一次，并保持窗口开着。窗口可以最小化，程序会保持页面在线。</p>
-            <p id="docker-desktop-note" class="muted note" hidden>登录浏览器跑在这个容器里。点「打开网页桌面」，在新页面登录 NodeSeek。密码仍是编排里的网页桌面密码。面板的反向代理需要允许 WebSocket，否则画面连不上。容器保持运行，监控就不会停。</p>
-            <p id="browser-state" class="muted"></p>
-            <div class="actions">
-              <a id="open-desktop-btn" class="button primary" href="/desktop/vnc.html?autoconnect=1&amp;resize=scale&amp;path=desktop/websockify" target="_blank" rel="noopener" hidden>打开网页桌面</a>
-              <button type="button" id="open-browser-btn" class="primary">打开登录浏览器</button>
-              <button type="button" id="test-browser-btn">测试登录窗口</button>
-              <button type="button" id="use-cookie-btn" class="ghost">仍用 Cookie</button>
-            </div>
-          </section>
 
-          <section class="panel">
-            <h2>备用：复制 Cookie</h2>
-            <p class="muted note">这种方式容易被拦住。优先用上面的登录浏览器。</p>
-            <ol class="steps">
-              <li>用浏览器登录 <a href="https://www.nodeseek.com" target="_blank" rel="noopener">nodeseek.com</a>。</li>
-              <li>按 F12，打开「网络」，刷新页面。</li>
-              <li>点一条发往 www.nodeseek.com 的请求，在请求标头里复制整段 Cookie。</li>
-              <li>不要用控制台的 document.cookie，登录态通常复制不到。</li>
-            </ol>
-            <label for="cookie">Cookie</label>
-            <textarea id="cookie" name="cookie" rows="6" spellcheck="false" placeholder="在这里粘贴 Cookie"></textarea>
-            <p id="cookie-state" class="muted"></p>
-            <div class="actions">
-              <button type="button" id="test-cookie-btn">测试 Cookie</button>
-              <button type="button" id="clear-cookie-btn" class="ghost">清除已保存的 Cookie</button>
-            </div>
-          </section>
+          <div class="settings-pane stack" id="settings-pane-daily" data-settings-pane="daily" role="tabpanel" aria-labelledby="settings-tab-daily" hidden>
+            <section class="panel">
+              <h2>每天自动签到</h2>
+              <p class="muted note">监控开着时，用当前登录签一次固定奖励，不走随机鸡腿。同一天只签一次。已经签过就记下来。失败会过半小时再试，不影响私信检查。</p>
+              <label class="checkline" for="checkin-enabled">
+                <input id="checkin-enabled" name="checkin_enabled" type="checkbox" checked>
+                每天自动签到
+              </label>
+            </section>
 
-          <section class="panel">
-            <h2>Telegram</h2>
-            <ol class="steps">
-              <li>在 Telegram 搜索 @BotFather，发送 /newbot，按提示拿到 Token。</li>
-              <li>打开你的机器人，发送 /start。</li>
-              <li>把 Token 填到下面，点「获取 Chat ID」，再保存。</li>
-            </ol>
-            <label for="tg-token">Bot Token</label>
-            <input id="tg-token" name="ns_bot_token" type="text" autocomplete="off" spellcheck="false" readonly placeholder="留空则不修改。格式如 123456789:AA...">
-            <p id="token-state" class="muted"></p>
-            <label for="tg-chat-id">Chat ID</label>
-            <input id="tg-chat-id" name="tg_chat_id" type="text" autocomplete="off" placeholder="获取后会填到这里">
-            <div class="actions">
-              <button type="button" id="discover-btn">获取 Chat ID</button>
-              <button type="button" id="test-tg-btn">发送测试消息</button>
-              <button type="button" id="clear-token-btn" class="ghost">清除 Token</button>
-            </div>
-          </section>
-
-          <section class="panel">
-            <h2>每天自动签到</h2>
-            <p class="muted note">监控开着时，用当前登录签一次固定奖励，不走随机鸡腿。同一天只签一次。已经签过就记下来。失败会过半小时再试，不影响私信检查。</p>
-            <label class="checkline" for="checkin-enabled">
-              <input id="checkin-enabled" name="checkin_enabled" type="checkbox" checked>
-              每天自动签到
-            </label>
-          </section>
-
-          <section class="panel">
-            <h2>水贴</h2>
-            <p class="muted note">监控开着、并且打开这个开关时，在所选板块发你写好的短回复。默认是内版，也就是公开页的无意义。默认关。只走登录浏览器。每天 1 到 50 条，默认 3 条。两条至少隔 10 分钟。站点如果提示达到上限，当天会停。只发这个板块的帖，关键词命中的帖会跳过。失败过半小时再试，不影响私信。</p>
-            <label class="checkline" for="water-enabled">
-              <input id="water-enabled" name="water_enabled" type="checkbox">
-              每天在所选板块发短回复
-            </label>
-            <label for="water-board">板块</label>
-            <select id="water-board" name="water_board">
-              <option value="meaningless">内版</option>
-            </select>
-            <div class="pair">
-              <div>
-                <label for="water-daily">每天几条</label>
-                <input id="water-daily" name="water_daily" type="number" min="1" max="50" value="3">
+            <section class="panel">
+              <h2>水贴</h2>
+              <p class="muted note">监控开着、并且打开这个开关时，在所选板块发你写好的短回复。默认是内版，也就是公开页的无意义。默认关。只走登录浏览器。每天 1 到 50 条，默认 3 条。两条至少隔 10 分钟。站点如果提示达到上限，当天会停。只发这个板块的帖，关键词命中的帖会跳过。失败过半小时再试，不影响私信。</p>
+              <label class="checkline" for="water-enabled">
+                <input id="water-enabled" name="water_enabled" type="checkbox">
+                每天在所选板块发短回复
+              </label>
+              <label for="water-board">板块</label>
+              <select id="water-board" name="water_board">
+                <option value="meaningless">内版</option>
+              </select>
+              <div class="pair">
+                <div>
+                  <label for="water-daily">每天几条</label>
+                  <input id="water-daily" name="water_daily" type="number" min="1" max="50" value="3">
+                </div>
+                <div>
+                  <label for="water-gap">间隔分钟</label>
+                  <input id="water-gap" name="water_gap" type="number" min="10" max="240" value="10">
+                </div>
               </div>
-              <div>
-                <label for="water-gap">间隔分钟</label>
-                <input id="water-gap" name="water_gap" type="number" min="10" max="240" value="10">
+              <label for="water-phrases">短回复，每行一句</label>
+              <textarea id="water-phrases" name="water_phrases" rows="4" spellcheck="false" placeholder="路过看看&#10;学习了"></textarea>
+              <p id="water-status" class="muted">关着</p>
+            </section>
+          </div>
+
+          <div class="settings-pane stack" id="settings-pane-monitor" data-settings-pane="monitor" role="tabpanel" aria-labelledby="settings-tab-monitor" hidden>
+            <section class="panel">
+              <h2>每天一条存活消息</h2>
+              <p class="muted note">容器停了，它自己发不出故障告警。到了下面的小时还没发过，就发一条“监控还在跑”。这一天没收到，就去看服务器。</p>
+              <label class="checkline" for="heartbeat-enabled">
+                <input id="heartbeat-enabled" name="heartbeat_enabled" type="checkbox" checked>
+                每天发一条
+              </label>
+              <label for="heartbeat-hour">几点发</label>
+              <input id="heartbeat-hour" name="heartbeat_hour" type="number" min="0" max="23" value="9">
+            </section>
+
+            <section class="panel">
+              <h2>关键词免打扰</h2>
+              <p class="muted note">这段时间命中的关键词先记下，结束后再推。私信、@和回复不受影响，仍然马上发。</p>
+              <label class="checkline" for="quiet-enabled">
+                <input id="quiet-enabled" name="quiet_enabled" type="checkbox">
+                开启免打扰
+              </label>
+              <div class="pair">
+                <div>
+                  <label for="quiet-start">开始</label>
+                  <input id="quiet-start" name="quiet_start" type="time" value="23:00">
+                </div>
+                <div>
+                  <label for="quiet-end">结束</label>
+                  <input id="quiet-end" name="quiet_end" type="time" value="08:00">
+                </div>
               </div>
-            </div>
-            <label for="water-phrases">短回复，每行一句</label>
-            <textarea id="water-phrases" name="water_phrases" rows="4" spellcheck="false" placeholder="路过看看&#10;学习了"></textarea>
-            <p id="water-status" class="muted">关着</p>
-          </section>
+            </section>
 
-          <section class="panel">
-            <h2>每天一条存活消息</h2>
-            <p class="muted note">容器停了，它自己发不出故障告警。到了下面的小时还没发过，就发一条“监控还在跑”。这一天没收到，就去看服务器。</p>
-            <label class="checkline" for="heartbeat-enabled">
-              <input id="heartbeat-enabled" name="heartbeat_enabled" type="checkbox" checked>
-              每天发一条
-            </label>
-            <label for="heartbeat-hour">几点发</label>
-            <input id="heartbeat-hour" name="heartbeat_hour" type="number" min="0" max="23" value="9">
-          </section>
+            <section class="panel">
+              <h2>检查间隔</h2>
+              <label for="interval">私信、@ 和回复，每隔多少秒</label>
+              <input id="interval" name="interval" type="number" min="10" max="3600" value="90">
+              <p class="muted">最短 10 秒。再短会连续请求登录接口，登录页容易被拦住。</p>
+              <label for="keyword-interval">关键词，每隔多少秒</label>
+              <input id="keyword-interval" name="keyword_interval" type="number" min="30" max="3600" value="60">
+              <p class="muted">默认 60 秒，最短 30 秒。关键词只看公开 RSS，不必跟私信一样频繁。</p>
+              <p class="muted">Cookie 和 Token 只写在本机 data 目录，不要把那个目录发给别人。</p>
+            </section>
+          </div>
 
-          <section class="panel">
-            <h2>关键词免打扰</h2>
-            <p class="muted note">这段时间命中的关键词先记下，结束后再推。私信、@和回复不受影响，仍然马上发。</p>
-            <label class="checkline" for="quiet-enabled">
-              <input id="quiet-enabled" name="quiet_enabled" type="checkbox">
-              开启免打扰
-            </label>
-            <div class="pair">
-              <div>
-                <label for="quiet-start">开始</label>
-                <input id="quiet-start" name="quiet_start" type="time" value="23:00">
-              </div>
-              <div>
-                <label for="quiet-end">结束</label>
-                <input id="quiet-end" name="quiet_end" type="time" value="08:00">
-              </div>
-            </div>
-          </section>
-
-          <section class="panel">
-            <h2>检查间隔</h2>
-            <label for="interval">私信、@ 和回复，每隔多少秒</label>
-            <input id="interval" name="interval" type="number" min="10" max="3600" value="90">
-            <p class="muted">最短 10 秒。再短会连续请求登录接口，登录页容易被拦住。</p>
-            <label for="keyword-interval">关键词，每隔多少秒</label>
-            <input id="keyword-interval" name="keyword_interval" type="number" min="30" max="3600" value="60">
-            <p class="muted">默认 60 秒，最短 30 秒。关键词只看公开 RSS，不必跟私信一样频繁。</p>
-            <p class="muted">Cookie 和 Token 只写在本机 data 目录，不要把那个目录发给别人。</p>
-          </section>
-
-          <div class="actions">
+          <div class="settings-save" hidden>
             <button type="submit" class="primary">保存设置</button>
+            <p class="muted">登录、Telegram、签到水贴和监控一起保存。</p>
           </div>
         </form>
       </section>

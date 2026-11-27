@@ -1800,7 +1800,7 @@ class UpgradeTest(unittest.TestCase):
         self.assertIn("nodeseek-pm:0.7.12", once)
         self.assertNotIn("0.7.11", once)
         compose = (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text(encoding="utf-8")
-        self.assertIn("image: nodeseek-pm:0.7.12", compose)
+        self.assertIn("image: nodeseek-pm:0.7.13", compose)
         self.assertIn("pull_policy: never", compose)
         self.assertIn("/var/run/docker.sock:/var/run/docker.sock", compose)
         watch = compose.split("nodeseek-watch:", 1)[1]
@@ -1971,6 +1971,44 @@ class UpgradeTest(unittest.TestCase):
         html = (Path(__file__).resolve().parent.parent / "ns_panel" / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="upgrade-btn"', html)
         self.assertIn('type="button"', html[html.find('id="upgrade-btn"') - 40:html.find('id="upgrade-btn"')])
+
+    def test_settings_page_uses_module_tabs(self):
+        root = Path(__file__).resolve().parent.parent
+        html = (root / "ns_panel" / "static" / "index.html").read_text(encoding="utf-8")
+        script = (root / "ns_panel" / "static" / "app.js").read_text(encoding="utf-8")
+        for tab in ("account", "upgrade", "login", "telegram", "daily", "monitor"):
+            self.assertIn(f'data-settings-tab="{tab}"', html)
+            self.assertIn(f'data-settings-pane="{tab}"', html)
+        for element_id in (
+            "account-form",
+            "panel-user",
+            "upgrade-panel",
+            "upgrade-btn",
+            "upgrade-check-btn",
+            "upgrade-status",
+            "settings-form",
+            "open-browser-btn",
+            "open-desktop-btn",
+            "use-cookie-btn",
+            "cookie",
+            "tg-token",
+            "tg-chat-id",
+            "discover-btn",
+            "checkin-enabled",
+            "water-enabled",
+            "water-board",
+            "heartbeat-enabled",
+            "quiet-enabled",
+            "interval",
+            "keyword-interval",
+        ):
+            self.assertEqual(html.count(f'id="{element_id}"'), 1)
+        account = html.find('id="account-form"')
+        settings = html.find('id="settings-form"')
+        self.assertLess(account, settings)
+        self.assertNotIn("account-form", html[settings:html.find("</form>", settings)])
+        self.assertIn("function showSettingsTab", script)
+        self.assertIn("settingsFormTabs", script)
 
     def test_upgrade_api_does_not_touch_network_without_socket(self):
         tmp = tempfile.TemporaryDirectory()
