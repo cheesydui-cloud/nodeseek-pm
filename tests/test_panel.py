@@ -1,12 +1,14 @@
 import base64
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ns_panel.mentions import format_mention_alerts, mention_link, parse_mentions, plan_mentions
@@ -22,6 +24,7 @@ from ns_panel.diff import (
     strip_html,
 )
 from ns_panel.botview import answer_for, open_markup, pm_open_links
+from ns_panel.desktop import DESKTOP_PAGE, desktop_upstream_path
 from ns_panel.monitor import Monitor, alert_hint
 from ns_panel.browser import BrowserDown, SessionDown, auth_mode, find_edge, login_asleep_message, run_with_retry
 from ns_panel.nodeseek import AuthError, CloudflareError, describe_checkin, looks_like_challenge
@@ -1007,6 +1010,8 @@ class ServerTest(unittest.TestCase):
         self.assertIn("每天自动签到", html)
         self.assertIn("水贴", html)
         self.assertIn("每天在所选板块发短回复", html)
+        self.assertIn('id="open-desktop-btn"', html)
+        self.assertIn("/desktop/vnc.html?autoconnect=1&amp;resize=scale&amp;path=desktop/websockify", html)
         self.assertIn('id="water-board"', html)
         self.assertIn('id="water-daily" name="water_daily" type="number" min="1" max="50"', html)
         status, css = self.get("/static/app.css")
@@ -1420,6 +1425,111 @@ class KeywordMonitorTest(unittest.TestCase):
         self.assertEqual(len(gap), 1)
 
 
+class DesktopTest(unittest.TestCase):
+    def test_upstream_path_strips_prefix_and_rejects_parent(self):
+        self.assertEqual(desktop_upstream_path("/desktop/vnc.html", "autoconnect=1"), "/vnc.html?autoconnect=1")
+        self.assertEqual(desktop_upstream_path("/desktop/app/ui.js", ""), "/app/ui.js")
+        self.assertIsNone(desktop_upstream_path("/desktop/../secret", ""))
+        self.assertIn("path=desktop/websockify", DESKTOP_PAGE)
+
+    def test_missing_desktop_explains_instead_of_crashing(self):
+        tmp = tempfile.TemporaryDirectory()
+        os.environ["NS_DESKTOP_PORT"] = "9"
+        app = App(Path(tmp.name))
+        httpd = create_httpd(app, "127.0.0.1", 0)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        host, port = httpd.server_address
+        try:
+            with urllib.request.urlopen(f"http://{host}:{port}/desktop/vnc.html") as response:
+                self.fail(f"expected 503, got {response.status}")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8")
+            self.assertEqual(exc.code, 503)
+            self.assertIn("还没准备好", body)
+        finally:
+            os.environ.pop("NS_DESKTOP_PORT", None)
+            httpd.shutdown()
+            httpd.server_close()
+            tmp.cleanup()
+
+    def test_desktop_proxies_page_and_websocket(self):
+        upstream = _FakeDesktop()
+        tmp = tempfile.TemporaryDirectory()
+        os.environ["NS_DESKTOP_PORT"] = str(upstream.port)
+        app = App(Path(tmp.name))
+        httpd = create_httpd(app, "127.0.0.1", 0)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        host, port = httpd.server_address
+        try:
+            with urllib.request.urlopen(f"http://{host}:{port}/desktop/vnc.html?autoconnect=1") as response:
+                body = response.read().decode("utf-8")
+                self.assertEqual(response.status, 200)
+            self.assertIn("desktop-page", body)
+            self.assertEqual(upstream.paths[0], "/vnc.html?autoconnect=1")
+
+            sock = socket.create_connection((host, port), timeout=5)
+            key = base64.b64encode(b"0123456789abcdef").decode()
+            sock.sendall(
+                (
+                    f"GET /desktop/websockify HTTP/1.1\r\nHost: {host}:{port}\r\n"
+                    "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                    f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                ).encode()
+            )
+            data = b""
+            sock.settimeout(5)
+            while b"\r\n\r\n" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            self.assertIn(b"101", data.split(b"\r\n", 1)[0])
+            self.assertTrue(any(item.startswith("/websockify") for item in upstream.paths))
+            sock.close()
+        finally:
+            os.environ.pop("NS_DESKTOP_PORT", None)
+            httpd.shutdown()
+            httpd.server_close()
+            upstream.close()
+            tmp.cleanup()
+
+
+class _FakeDesktop:
+    def __init__(self):
+        self.paths = []
+        parent = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                return
+
+            def do_GET(self):
+                parent.paths.append(self.path)
+                if "websocket" in (self.headers.get("Upgrade") or "").lower():
+                    self.send_response(101, "Switching Protocols")
+                    self.send_header("Upgrade", "websocket")
+                    self.send_header("Connection", "Upgrade")
+                    self.end_headers()
+                    return
+                body = b"desktop-page"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
 class LoginTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1467,6 +1577,10 @@ class LoginTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("登录这个面板", body)
         self.assertNotIn("开始监控", body)
+        status, body, _headers = self.open("/desktop/vnc.html")
+        self.assertIn("登录这个面板", body)
+        self.assertNotIn("还没准备好", body)
+        self.assertNotIn("desktop-page", body)
         self.assertNotIn("WWW-Authenticate", str(headers))
 
         status, body, _headers = self.open("/api/login", {"user": "admin", "password": "wrong-pass"})

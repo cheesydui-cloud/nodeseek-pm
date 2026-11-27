@@ -119,8 +119,10 @@ function renderStatus(data) {
   const brand = $("#brand-note");
   if (brand) brand.textContent = docker ? "服务器" : "本机面板";
   const desk = $("#docker-desktop-note");
+  const deskBtn = $("#open-desktop-btn");
   const localNote = $("#browser-note");
   if (desk) desk.hidden = !docker;
+  if (deskBtn) deskBtn.hidden = !docker;
   if (localNote) localNote.hidden = docker;
   const side = $("#side-note");
   if (side && docker) {
@@ -132,7 +134,7 @@ function renderStatus(data) {
     banners.push(`<div class="banner info">先到「设置」打开登录浏览器，或到「关键词」页填写要盯的词。</div>`);
   }
   if (docker && data.auth_mode === "browser" && data.browser_open && !data.self_name) {
-    banners.push(`<div class="banner info">请打开网页桌面，登录 NodeSeek。登录一次后保持容器运行。</div>`);
+    banners.push(`<div class="banner info">请<a href="/desktop/vnc.html?autoconnect=1&amp;resize=scale&amp;path=desktop/websockify" target="_blank" rel="noopener">打开网页桌面</a>，登录 NodeSeek。登录一次后保持容器运行。</div>`);
   } else if (data.auth_mode === "browser" && !data.browser_open) {
     banners.push(`<div class="banner warn">${docker ? "容器里的浏览器还没连上。请看 1Panel 的容器日志。" : "登录浏览器没开。请到「设置」点「打开登录浏览器」，登录后不要关窗口。"}</div>`);
   } else if (data.auth_mode !== "browser" && data.has_cookie) {

@@ -13,7 +13,7 @@ import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 from ns_panel import __version__
 from ns_panel.browser import BrowserClient, auth_mode, browser_is_open, open_login_window, port_open, wait_for_port
@@ -49,6 +49,7 @@ from ns_panel.water import (
 from ns_panel.schedule import in_quiet_hours, valid_hhmm
 from ns_panel.store import Store
 from ns_panel.botview import reply_keyboard
+from ns_panel.desktop import serve_desktop
 from ns_panel.telegram import TelegramError, discover_chat_id, send_message
 
 
@@ -150,6 +151,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET" and path in ("/", "/index.html"):
             self._redirect("/login")
             return False
+        if self.command == "GET" and (path == "/desktop" or path.startswith("/desktop/")):
+            self._redirect("/login")
+            return False
         body = '{"ok":false,"error":"请先登录"}'.encode("utf-8")
         self.send_response(401)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -164,6 +168,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             path, query = _split(self.path)
+            parsed = urlsplit(self.path)
+            if parsed.path == "/desktop" or parsed.path.startswith("/desktop/"):
+                serve_desktop(self, parsed.path, parsed.query)
+                return
             if path == "/login":
                 if not panel_login_required(self.server.app.store) or self.server.app.session_valid(session_token(self.headers.get("Cookie"))):
                     self._redirect("/")
@@ -980,7 +988,7 @@ def serve(root: Path | None = None, open_browser: bool = True) -> None:
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print(f"面板地址：http://{shown}:{port}", flush=True)
     if os.environ.get("NS_RUNTIME") == "docker":
-        print("网页桌面在本机 6080 端口。请在 1Panel 里做反向代理，并打开访问认证。", flush=True)
+        print("网页桌面可从面板设置页打开。反向代理需要允许 WebSocket。", flush=True)
         print("停止这个容器就会停止监控。", flush=True)
     else:
         print("关闭这个窗口就会停止监控。", flush=True)

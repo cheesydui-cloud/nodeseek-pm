@@ -148,8 +148,16 @@ button {
   cursor: pointer;
 }
 
-button.primary { background: var(--green); border-color: var(--green); color: white; }
-button.primary:hover { background: var(--green-dark); }
+a.button {
+  display: inline-block;
+  border: 1px solid var(--line);
+  background: white;
+  border-radius: 10px;
+  padding: 8px 14px;
+  text-decoration: none;
+}
+a.button.primary, button.primary { background: var(--green); border-color: var(--green); color: white; }
+a.button.primary:hover, button.primary:hover { background: var(--green-dark); }
 button.ghost { background: transparent; }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
 

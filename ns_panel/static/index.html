@@ -207,9 +207,10 @@
           <section class="panel">
             <h2>登录浏览器</h2>
             <p id="browser-note" class="muted note">复制出来的 Cookie 和这个程序对不上，Cloudflare 会过一会儿就拦住。点下面的按钮会弹出一个专用 Edge。在那个窗口登录一次，并保持窗口开着。窗口可以最小化，程序会保持页面在线。</p>
-            <p id="docker-desktop-note" class="muted note" hidden>登录浏览器跑在这个容器里。在 1Panel 给本机 6080 端口做反向代理，打开网页桌面，登录 NodeSeek。网页桌面密码是环境变量 VNC_PASSWORD，最多 8 位。容器保持运行，监控就不会停。</p>
+            <p id="docker-desktop-note" class="muted note" hidden>登录浏览器跑在这个容器里。点「打开网页桌面」，在新页面登录 NodeSeek。密码仍是编排里的网页桌面密码。面板的反向代理需要允许 WebSocket，否则画面连不上。容器保持运行，监控就不会停。</p>
             <p id="browser-state" class="muted"></p>
             <div class="actions">
+              <a id="open-desktop-btn" class="button primary" href="/desktop/vnc.html?autoconnect=1&amp;resize=scale&amp;path=desktop/websockify" target="_blank" rel="noopener" hidden>打开网页桌面</a>
               <button type="button" id="open-browser-btn" class="primary">打开登录浏览器</button>
               <button type="button" id="test-browser-btn">测试登录窗口</button>
               <button type="button" id="use-cookie-btn" class="ghost">仍用 Cookie</button>
