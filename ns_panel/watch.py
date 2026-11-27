@@ -65,7 +65,7 @@ def watch_once(db_path: Path, url: str, state: dict, opener=None, sender=None, l
         fails += 1
         state["fails"] = fails
         if fails >= fails_needed and alert != "down":
-            text = "NodeSeek 监控面板没有响应。请到 1Panel 看容器 nodeseek-pm 是否在跑。"
+            text = "NodeSeek 监控面板没有响应。请到 1Panel 看这一套面板容器是否在跑。"
             if _send(sender, token, chat_id, text, write):
                 state["alert"] = "down"
                 write("已提醒：面板没有响应。")

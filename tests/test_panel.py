@@ -45,10 +45,15 @@ from ns_panel.nodeseek import NodeSeekClient
 from ns_panel.pages import notification_path
 from ns_panel.server import App, create_httpd, panel_authorized
 from ns_panel.upgrade import (
+    UpgradeService,
     bump_compose_image,
     container_id_from_text,
+    ensure_pull_policy,
+    helper_publish_mounts,
     is_newer,
+    mount_source,
     parse_version,
+    publish_tree,
     replacement_spec,
     sync_source,
     valid_tag,
@@ -1772,6 +1777,141 @@ class UpgradeTest(unittest.TestCase):
         self.assertIn("image: redis:7", out)
         self.assertIn("container_name: nodeseek-pm", out)
         self.assertEqual(bump_compose_image(text, "redis:7"), text)
+
+    def test_pull_policy_is_added_once_and_compose_stays_local(self):
+        text = "\n".join([
+            "services:",
+            "  nodeseek-pm:",
+            "    image: nodeseek-pm:0.7.11",
+            "    ports:",
+            '      - "127.0.0.1:8789:8787"',
+            "      NS_PANEL_PASSWORD: keep-me",
+            "  nodeseek-watch:",
+            "    image: nodeseek-pm:0.7.11",
+            "    pull_policy: never",
+            "",
+        ])
+        once = ensure_pull_policy(bump_compose_image(text, "nodeseek-pm:0.7.12"))
+        twice = ensure_pull_policy(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(once.count("pull_policy: never"), 2)
+        self.assertIn("8789:8787", once)
+        self.assertIn("keep-me", once)
+        self.assertIn("nodeseek-pm:0.7.12", once)
+        self.assertNotIn("0.7.11", once)
+        compose = (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("image: nodeseek-pm:0.7.12", compose)
+        self.assertIn("pull_policy: never", compose)
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", compose)
+        watch = compose.split("nodeseek-watch:", 1)[1]
+        self.assertNotIn("docker.sock", watch)
+        self.assertIn("PANEL_PORT", compose)
+        self.assertIn("PANEL_CONTAINER", compose)
+
+    def test_mount_source_and_root_publish_plan(self):
+        info = {
+            "Mounts": [
+                {"Source": "/opt/compose/nodeseek-pm-2", "Destination": "/compose"},
+                {"Source": "/opt/compose/nodeseek-pm-2/data", "Destination": "/app/data"},
+            ]
+        }
+        self.assertEqual(mount_source(info, "/compose"), "/opt/compose/nodeseek-pm-2")
+        self.assertEqual(mount_source(info, "/missing"), "")
+        self.assertIsNone(helper_publish_mounts(True, "/opt/compose/nodeseek-pm-2", "/opt/compose/nodeseek-pm-2/data"))
+        self.assertEqual(
+            helper_publish_mounts(False, "/opt/compose/nodeseek-pm-2", "/opt/compose/nodeseek-pm-2/data"),
+            ("/opt/compose/nodeseek-pm-2", "/opt/compose/nodeseek-pm-2/data/.upgrade-staging"),
+        )
+        self.assertIsNone(helper_publish_mounts(False, "", "/data"))
+
+    def test_publish_tree_updates_image_and_source_only(self):
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name) / "src"
+        dest = Path(tmp.name) / "compose"
+        dest.mkdir()
+        (dest / "docker-compose.yml").write_text(
+            "image: nodeseek-pm:0.7.10\nports: 8789\nNS_PANEL_PASSWORD: keep\n",
+            encoding="utf-8",
+        )
+        (root / "ns_panel").mkdir(parents=True)
+        (root / "ns_panel" / "x.py").write_text("print(1)\n", encoding="utf-8")
+        (root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        publish_tree(root, dest, "nodeseek-pm:0.7.11")
+        text = (dest / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("nodeseek-pm:0.7.11", text)
+        self.assertIn("pull_policy: never", text)
+        self.assertIn("8789", text)
+        self.assertIn("keep", text)
+        self.assertEqual((dest / "Dockerfile").read_text(encoding="utf-8"), "FROM scratch\n")
+        tmp.cleanup()
+
+    def test_permission_denied_still_switches_container(self):
+        import ns_panel.upgrade as upgrade_api
+
+        calls = {}
+
+        class FakeDocker:
+            def build(self, context, tag):
+                calls["built"] = tag
+
+            def inspect(self, container):
+                calls["inspected"] = container
+                return {
+                    "Id": "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd",
+                    "Image": "sha256:old",
+                    "Config": {"Labels": {"com.docker.compose.project": "nodeseek-pm-2"}},
+                    "Mounts": [
+                        {"Source": "/opt/compose/nodeseek-pm-2", "Destination": str(compose)},
+                        {"Source": "/opt/compose/nodeseek-pm-2/data", "Destination": "/app/data"},
+                    ],
+                }
+
+            def spawn_helper(self, image_id, project, new_image, self_id, publish=None):
+                calls["spawn"] = {
+                    "image_id": image_id,
+                    "project": project,
+                    "new_image": new_image,
+                    "self_id": self_id,
+                    "publish": publish,
+                }
+                return "helper"
+
+        service = UpgradeService(docker=FakeDocker())
+        compose = Path("/compose")
+        original = {
+            "fetch_latest": upgrade_api.fetch_latest,
+            "download_release": upgrade_api.download_release,
+            "compose_dir": upgrade_api.compose_dir,
+            "publish_tree": upgrade_api.publish_tree,
+            "stage_tree": upgrade_api.stage_tree,
+            "own_container_ref": upgrade_api.own_container_ref,
+        }
+
+        def fake_publish(root, compose, image):
+            raise PermissionError(13, "Permission denied", "/compose/Dockerfile")
+
+        upgrade_api.fetch_latest = lambda: {"tag": "v9.9.9", "version": "9.9.9", "url": ""}
+        upgrade_api.download_release = lambda tag, dest: dest
+        upgrade_api.compose_dir = lambda: compose
+        upgrade_api.publish_tree = fake_publish
+        upgrade_api.stage_tree = lambda root, staging: calls.__setitem__("staged", str(staging))
+        upgrade_api.own_container_ref = lambda: "abc123"
+        try:
+            service._run()
+        finally:
+            for name, value in original.items():
+                setattr(upgrade_api, name, value)
+        self.assertEqual(calls["built"], "nodeseek-pm:9.9.9")
+        staged = Path(calls["staged"])
+        self.assertEqual(staged.name, ".upgrade-staging")
+        self.assertEqual(staged.parts[-2:], ("data", ".upgrade-staging"))
+        self.assertEqual(calls["spawn"]["project"], "nodeseek-pm-2")
+        self.assertEqual(calls["spawn"]["new_image"], "nodeseek-pm:9.9.9")
+        self.assertEqual(
+            calls["spawn"]["publish"],
+            ("/opt/compose/nodeseek-pm-2", "/opt/compose/nodeseek-pm-2/data/.upgrade-staging"),
+        )
+        self.assertEqual(service.state, "restarting")
 
     def test_source_copy_skips_compose_and_data(self):
         tmp = tempfile.TemporaryDirectory()

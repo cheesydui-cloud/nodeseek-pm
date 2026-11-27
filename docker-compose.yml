@@ -1,45 +1,68 @@
-# 启动前把 NS_PANEL_PASSWORD 和 VNC_PASSWORD 改成你自己的密码。
+# 1Panel 里用「编排」创建。不要勾选拉取镜像，本镜像不在 Docker Hub。
+# 第一套直接用默认端口。第二套另建一个编排，在环境变量里改这四项，避免容器名和端口撞车：
+#   PANEL_CONTAINER=nodeseek-pm-2
+#   WATCH_CONTAINER=nodeseek-watch-2
+#   PANEL_PORT=8789
+#   DESKTOP_PORT=6081
+# 面板密码和网页桌面密码也在环境变量里改。桌面密码只用英文字母和数字，最多 8 位。
+# 已有编排不要整份覆盖。升级只改 image 行。
 services:
   nodeseek-pm:
     build: .
-    image: nodeseek-pm:0.7.11
-    container_name: nodeseek-pm
+    image: nodeseek-pm:0.7.12
+    pull_policy: never
+    container_name: ${PANEL_CONTAINER:-nodeseek-pm}
     restart: unless-stopped
     init: true
     shm_size: 1gb
     security_opt:
       - seccomp:unconfined
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       TZ: Asia/Shanghai
       NS_RUNTIME: docker
       NS_HOST: 0.0.0.0
       NS_PORT: "8787"
       NS_OPEN_BROWSER: "0"
-      NS_PANEL_USER: admin
-      NS_PANEL_PASSWORD: change-me
-      VNC_PASSWORD: change12
+      NS_PANEL_USER: ${NS_PANEL_USER:-admin}
+      NS_PANEL_PASSWORD: ${NS_PANEL_PASSWORD:-change-me}
+      VNC_PASSWORD: ${VNC_PASSWORD:-change12}
       NS_COMPOSE_DIR: /compose
     ports:
-      - "127.0.0.1:8787:8787"
-      - "127.0.0.1:6080:6080"
-    # 升级按钮要用 Docker 套接字和这份编排目录。已有服务器要手写加一次，拉取代码不会改编排文件。
-    # 看门狗不要加这个套接字。
+      - "127.0.0.1:${PANEL_PORT:-8787}:8787"
+      - "127.0.0.1:${DESKTOP_PORT:-6080}:6080"
+    # 升级按钮要用 Docker 套接字和这份编排目录。看门狗不要加这个套接字。
     volumes:
       - ./data:/app/data
       - ./browser-data:/browser-data
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/compose
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   # 面板容器自己挂了就发不出每日存活消息。这个服务在外面看 /health。
-  # 整台机器关机时它也发不出。已有服务器要手写加一次，拉取代码不会改编排文件。
   nodeseek-watch:
-    build: .
-    image: nodeseek-pm:0.7.11
-    container_name: nodeseek-watch
+    image: nodeseek-pm:0.7.12
+    pull_policy: never
+    container_name: ${WATCH_CONTAINER:-nodeseek-watch}
     restart: unless-stopped
     init: true
     depends_on:
-      - nodeseek-pm
+      nodeseek-pm:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       TZ: Asia/Shanghai
       NS_WATCH_URL: http://nodeseek-pm:8787/health

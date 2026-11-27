@@ -80,6 +80,22 @@ def bump_compose_image(text: str, image: str) -> str:
     return _IMAGE_LINE.sub(lambda match: f"{match.group(1)}{image}{match.group(2)}", text)
 
 
+def ensure_pull_policy(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    for index, line in enumerate(lines):
+        out.append(line)
+        if not _IMAGE_LINE.match(line.rstrip("\r\n")):
+            continue
+        nxt = lines[index + 1].lstrip() if index + 1 < len(lines) else ""
+        if nxt.startswith("pull_policy:"):
+            continue
+        indent = line[: len(line) - len(line.lstrip())]
+        ending = "\r\n" if line.endswith("\r\n") else "\n"
+        out.append(f"{indent}pull_policy: never{ending}")
+    return "".join(out)
+
+
 def socket_path() -> str:
     return os.environ.get("NS_DOCKER_SOCK") or SOCKET
 
@@ -193,6 +209,50 @@ def sync_source(root: Path, compose_dir: Path) -> None:
         shutil.copy2(path, target)
 
 
+def publish_tree(root: Path, compose: Path, image: str) -> None:
+    sync_source(root, compose)
+    compose_file = compose / "docker-compose.yml"
+    if not compose_file.is_file():
+        return
+    current = compose_file.read_text(encoding="utf-8")
+    updated = ensure_pull_policy(bump_compose_image(current, image))
+    if updated != current:
+        compose_file.write_text(updated, encoding="utf-8")
+
+
+def stage_tree(root: Path, staging: Path) -> None:
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    sync_source(root, staging)
+
+
+def clear_children(path: Path) -> None:
+    if not path.is_dir():
+        return
+    for child in path.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
+def mount_source(info: dict, destination: str) -> str:
+    wanted = destination.rstrip("/") or "/"
+    for mount in info.get("Mounts") or []:
+        dest = str(mount.get("Destination") or "").rstrip("/") or "/"
+        source = str(mount.get("Source") or "")
+        if dest == wanted and source:
+            return source
+    return ""
+
+
+def helper_publish_mounts(wrote: bool, compose_host: str, data_host: str) -> tuple[str, str] | None:
+    if wrote or not compose_host or not data_host:
+        return None
+    return compose_host, data_host.rstrip("/") + "/.upgrade-staging"
+
+
 def compose_dir() -> Path | None:
     raw = (os.environ.get("NS_COMPOSE_DIR") or "").strip()
     if not raw:
@@ -252,7 +312,7 @@ class DockerClient:
     def build(self, context: bytes, tag: str) -> None:
         _status, data = self.request(
             "POST",
-            "/v1.41/build?t=" + urllib.request.quote(tag) + "&rm=1&forcerm=1&dockerfile=Dockerfile",
+            "/v1.41/build?t=" + urllib.request.quote(tag) + "&rm=1&forcerm=1&pull=0&dockerfile=Dockerfile",
             body=context,
             headers={"Content-Type": "application/x-tar"},
             timeout=900,
@@ -285,16 +345,30 @@ class DockerClient:
     def remove(self, container: str) -> None:
         self.request("DELETE", f"/v1.41/containers/{container}?force=1")
 
-    def spawn_helper(self, image_id: str, project: str, new_image: str, self_id: str) -> str:
+    def spawn_helper(
+        self,
+        image_id: str,
+        project: str,
+        new_image: str,
+        self_id: str,
+        publish: tuple[str, str] | None = None,
+    ) -> str:
+        binds = [f"{self.sock}:{self.sock}"]
+        cmd = ["--project", project, "--image", new_image, "--self", self_id, "--delay", "3"]
+        if publish:
+            compose_host, staging_host = publish
+            binds.append(f"{compose_host}:/host-compose")
+            binds.append(f"{staging_host}:/host-staging")
+            cmd.extend(["--compose", "/host-compose", "--publish", "/host-staging"])
         spec = {
             "Image": image_id,
             "User": "0:0",
             "WorkingDir": "/app",
             "Entrypoint": ["python", "-m", "ns_panel.upgrade_apply"],
-            "Cmd": ["--project", project, "--image", new_image, "--self", self_id, "--delay", "3"],
+            "Cmd": cmd,
             "Env": ["NS_UPGRADE_APPLY=1"],
             "HostConfig": {
-                "Binds": [f"{self.sock}:{self.sock}"],
+                "Binds": binds,
                 "AutoRemove": True,
                 "NetworkMode": "none",
                 "RestartPolicy": {"Name": "no"},
@@ -566,20 +640,30 @@ class UpgradeService:
             self._set("running", "正在构建镜像，可能要几分钟")
             self.docker.build(context_tar(root), image)
             target = compose_dir()
+            wrote = target is None
             if target is not None:
-                sync_source(root, target)
-                compose_file = target / "docker-compose.yml"
-                if compose_file.is_file():
-                    compose_file.write_text(
-                        bump_compose_image(compose_file.read_text(encoding="utf-8"), image),
-                        encoding="utf-8",
-                    )
+                try:
+                    publish_tree(root, target, image)
+                    wrote = True
+                except OSError as exc:
+                    self.log("error", f"面板用户写不了编排目录，改由 root 写回：{exc}")
+                    try:
+                        stage_tree(root, Path("/app/data/.upgrade-staging"))
+                    except OSError as stage_exc:
+                        self.log("error", f"也没能暂存新文件，仍会换上新镜像：{stage_exc}")
             self_id = own_container_ref()
             own = self.docker.inspect(self_id)
             project = ((own.get("Config") or {}).get("Labels") or {}).get("com.docker.compose.project") or ""
             image_id = own.get("Image") or image
+            publish = helper_publish_mounts(
+                wrote,
+                mount_source(own, str(target)) if target is not None else "",
+                mount_source(own, "/app/data"),
+            )
+            if target is not None and not wrote and publish is None:
+                self.log("error", "没找到编排目录的宿主机路径。容器会换新镜像，编排文件里的版本号可能还是旧的。")
             self._set("restarting", "正在重启容器，请等一两分钟后刷新")
-            self.docker.spawn_helper(image_id, project, image, own.get("Id") or self_id)
+            self.docker.spawn_helper(image_id, project, image, own.get("Id") or self_id, publish)
         except Exception as exc:
             self._set("error", f"升级失败：{exc}")
             self.log("error", f"升级失败：{exc}")
