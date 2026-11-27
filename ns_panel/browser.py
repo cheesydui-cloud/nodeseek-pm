@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from ns_panel.diff import infer_self_id, message_rows
+from ns_panel.diff import infer_self_id, member_from_html, message_rows, self_id_from_thread
 from ns_panel.nodeseek import (
     ApiError,
     AuthError,
@@ -196,17 +196,75 @@ class BrowserClient:
             "/api/account/getInfo",
             "/api/account/info",
             "/api/account/profile",
+            "/api/member/info",
+            "/api/user/info",
         ):
             try:
                 data = self.get_json(path)
-            except (AuthError, CloudflareError):
-                raise
-            except ApiError:
+            except (AuthError, CloudflareError, ApiError):
                 continue
             member = extract_member(data)
             if member:
                 return member
-        return None
+        page = self.page_member()
+        if page:
+            return page
+        try:
+            return member_from_html(self.get_text("/"))
+        except (AuthError, CloudflareError):
+            raise
+        except (ApiError, SessionDown):
+            return None
+
+    def page_member(self) -> Member | None:
+        self.ensure_window()
+        expression = (
+            "(() => {"
+            "const read = (el) => {"
+            " if (!el) return null;"
+            " const href = el.getAttribute('href') || '';"
+            " const found = href.match(/\\/space\\/(\\d+)/);"
+            " if (!found) return null;"
+            " const img = el.querySelector('img');"
+            " let name = (el.getAttribute('title') || '').trim();"
+            " if (!name && img) name = (img.getAttribute('alt') || '').trim();"
+            " if (!name) name = (el.innerText || '').trim().split('\\n')[0].trim();"
+            " if (name.length > 64) name = '';"
+            " return {member_id: Number(found[1]), member_name: name};"
+            "};"
+            " const selectors = ['header a[href*=\"/space/\"]', 'nav a[href*=\"/space/\"]',"
+            " '.header a[href*=\"/space/\"]', '.nav a[href*=\"/space/\"]'];"
+            " for (const sel of selectors) {"
+            "  const nodes = document.querySelectorAll(sel);"
+            "  if (!nodes.length) continue;"
+            "  const picked = read(nodes[nodes.length - 1]);"
+            "  if (picked) return JSON.stringify(picked);"
+            " }"
+            " const top = [];"
+            " for (const el of document.querySelectorAll('a[href*=\"/space/\"]')) {"
+            "  const box = el.getBoundingClientRect();"
+            "  if (box.top >= 0 && box.top < 140 && box.width > 0) top.push(el);"
+            " }"
+            " if (top.length) {"
+            "  const picked = read(top[top.length - 1]);"
+            "  if (picked) return JSON.stringify(picked);"
+            " }"
+            " return '';"
+            "})()"
+        )
+        try:
+            raw = shared_session(self.port).evaluate(expression)
+        except (SessionDown, BrowserDown):
+            raise
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return extract_member(data)
 
     def get_message_list(self, page: int = 1) -> dict:
         from ns_panel.pages import notification_path
@@ -227,7 +285,33 @@ class BrowserClient:
         return self.get_json(notification_path("reply", page))
 
     def resolve_self_id(self, payload) -> int | None:
-        return infer_self_id(message_rows(payload))
+        page = self.page_member()
+        if page:
+            return page.member_id
+        rows = message_rows(payload)
+        inferred = infer_self_id(rows)
+        if inferred:
+            return inferred
+        candidates: list[int] = []
+        for row in rows:
+            for key in ("sender_id", "receiver_id"):
+                try:
+                    number = int(row.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if number > 0 and number not in candidates:
+                    candidates.append(number)
+            if len(candidates) >= 2:
+                break
+        for member_id in candidates[:2]:
+            try:
+                data = self.get_json(f"/api/notification/message/with/{member_id}")
+            except ApiError:
+                continue
+            found = self_id_from_thread(data, member_id)
+            if found:
+                return found
+        return None
 
     def get_json(self, path: str):
         status, content_type, text = self._fetch(path)

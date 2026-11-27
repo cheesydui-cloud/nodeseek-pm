@@ -17,6 +17,7 @@ from ns_panel.diff import (
     extract_member,
     format_pushes,
     infer_self_id,
+    member_from_html,
     parse_cookie,
     parse_message_list,
     select_notifications,
@@ -86,6 +87,14 @@ class DiffTest(unittest.TestCase):
     def test_account_and_self_id(self):
         member = extract_member({"success": True, "data": {"member_id": "9", "member_name": "me"}})
         self.assertEqual((member.member_id, member.member_name), (9, "me"))
+        named = extract_member({"success": True, "data": {"uid": 42, "username": "xjetty"}})
+        self.assertEqual((named.member_id, named.member_name), (42, "xjetty"))
+        page = member_from_html(
+            "<header><a href=\"/\">NodeSeek</a><a href=\"/space/42\"><img alt=\"xjetty\"></a></header>"
+            "<ul><a href=\"/space/9\">酒神</a></ul>"
+        )
+        self.assertEqual((page.member_id, page.member_name), (42, "xjetty"))
+        self.assertIsNone(member_from_html("<ul><a href=\"/space/9\">酒神</a></ul>"))
         self.assertEqual(infer_self_id(PAYLOAD["msgArray"]), 9)
         self.assertEqual(
             self_id_from_thread(

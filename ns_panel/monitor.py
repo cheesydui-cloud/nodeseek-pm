@@ -396,6 +396,8 @@ class Monitor:
         if not self_id:
             self_id = client.resolve_self_id(first)
         if not self_id:
+            if isinstance(client, BrowserClient):
+                return self._fail("登录浏览器已经打开，但没能从页面读到当前账号。请确认网页桌面右上角是自己的头像，然后再检查一次。", alert=False)
             return self._fail("拉到了私信列表，但没能识别当前账号。请更新 Cookie 后再试。", alert=False)
 
         self_name = account.member_name if account and account.member_name else ""

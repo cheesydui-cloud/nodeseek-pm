@@ -69,23 +69,73 @@ def parse_cookie(raw: str) -> str:
     return "; ".join(parts)
 
 
+_NAME_KEYS = (
+    "member_name",
+    "memberName",
+    "username",
+    "userName",
+    "nickname",
+    "nickName",
+    "name",
+)
+_SPACE_LINK = re.compile(
+    r"""href=["'](?:https://www\.nodeseek\.com)?/space/(\d+)["']([^>]*)>(.*?)</a>""",
+    re.I | re.S,
+)
+
+
+def _member_name(node: dict) -> str:
+    for key in _NAME_KEYS:
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def member_from_node(node) -> Member | None:
     if not isinstance(node, dict):
         return None
-    raw_id = node.get("member_id", node.get("memberId"))
+    raw_id = (
+        node.get("member_id")
+        if node.get("member_id") not in (None, "")
+        else node.get("memberId")
+        if node.get("memberId") not in (None, "")
+        else node.get("uid")
+        if node.get("uid") not in (None, "")
+        else node.get("user_id")
+        if node.get("user_id") not in (None, "")
+        else node.get("userId")
+    )
+    name = _member_name(node)
+    if raw_id in (None, "") and name:
+        raw_id = node.get("id")
     member_id = as_int(raw_id)
     if member_id is None or member_id <= 0:
         return None
-    name = (
-        node.get("member_name")
-        or node.get("memberName")
-        or node.get("username")
-        or node.get("name")
-        or ""
-    )
-    if not isinstance(name, str):
-        name = ""
-    return Member(member_id, name.strip())
+    return Member(member_id, name)
+
+
+def member_from_html(html_text: str) -> Member | None:
+    """从页面顶部的个人主页链接读取当前登录用户。帖子列表里的作者不算。"""
+    text = html_text or ""
+    end = re.search(r"</header>", text, re.I)
+    if not end:
+        return None
+    region = text[: end.end()]
+    found: list[Member] = []
+    for match in _SPACE_LINK.finditer(region):
+        member_id = int(match.group(1))
+        if member_id <= 0:
+            continue
+        inner = strip_html(match.group(3)).strip().split("\n")[0].strip()
+        alt = re.search(r"""alt=["']([^"']+)["']""", match.group(0))
+        name = inner or (alt.group(1).strip() if alt else "")
+        if len(name) > 64:
+            name = ""
+        found.append(Member(member_id, name))
+    if not found:
+        return None
+    return found[-1]
 
 
 def extract_member(payload) -> Member | None:
