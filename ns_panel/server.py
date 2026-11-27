@@ -51,6 +51,8 @@ from ns_panel.store import Store
 from ns_panel.botview import reply_keyboard
 from ns_panel.desktop import serve_desktop
 from ns_panel.telegram import TelegramError, discover_chat_id, send_message
+from ns_panel import upgrade as upgrade_api
+from ns_panel.upgrade import UpgradeService, socket_ready
 
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -66,6 +68,7 @@ class App:
         self.root = root
         self.store = Store(root / "data" / "panel.db")
         self.monitor = Monitor(self.store)
+        self.upgrade = UpgradeService(self.monitor.log)
         self.sessions: dict[str, float] = {}
         self.login_failures: dict[str, tuple[int, float]] = {}
         self.session_lock = threading.Lock()
@@ -216,6 +219,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/replies":
                 self._json(200, replies_payload(self.server.app.store))
                 return
+            if path == "/api/upgrade":
+                self._json(200, self.server.app.upgrade.status(fetch=upgrade_api.fetch_latest))
+                return
             self._json(404, {"ok": False, "error": "没有这个页面"})
         except Exception as exc:
             self._fail(exc)
@@ -323,6 +329,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = app.monitor.scan_replies(reset=True)
                 code = 200 if result.get("ok") else 400
                 self._json(code, result)
+                return
+            if path == "/api/upgrade":
+                payload, code = app.upgrade.start()
+                self._json(code, payload)
                 return
             self._json(404, {"ok": False, "error": "没有这个操作"})
         except (TelegramError, NodeSeekError, ValueError) as exc:
@@ -989,6 +999,10 @@ def serve(root: Path | None = None, open_browser: bool = True) -> None:
     print(f"面板地址：http://{shown}:{port}", flush=True)
     if os.environ.get("NS_RUNTIME") == "docker":
         print("网页桌面可从面板设置页打开。反向代理需要允许 WebSocket。", flush=True)
+        if socket_ready():
+            print("设置页可以检查并升级这一套容器。", flush=True)
+        else:
+            print("还没挂上 Docker 套接字，设置页的升级按钮暂时不能用。", flush=True)
         print("停止这个容器就会停止监控。", flush=True)
     else:
         print("关闭这个窗口就会停止监控。", flush=True)

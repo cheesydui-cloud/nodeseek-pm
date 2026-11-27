@@ -36,6 +36,30 @@ export HOME=/home/ns
 mkdir -p /app/data "$NS_BROWSER_DIR" /tmp/.X11-unix
 chmod 755 /app/data "$NS_BROWSER_DIR" /tmp/.X11-unix
 chown -R ns:ns /app/data "$NS_BROWSER_DIR" /home/ns
+
+grant_docker_socket() {
+  sock="${NS_DOCKER_SOCK:-/var/run/docker.sock}"
+  if [ ! -S "$sock" ]; then
+    return 0
+  fi
+  gid=$(stat -c %g "$sock" 2>/dev/null || true)
+  if [ -z "$gid" ]; then
+    echo "没能读取 Docker 套接字的用户组，面板升级暂时不能用。"
+    return 0
+  fi
+  group=$(python -c "import grp,sys; gid=int(sys.argv[1]); print(next((item.gr_name for item in grp.getgrall() if item.gr_gid==gid), ''))" "$gid")
+  if [ -z "$group" ]; then
+    group=dockerhost
+    if ! groupadd -g "$gid" "$group"; then
+      echo "没能加入 Docker 套接字的用户组，面板升级暂时不能用。"
+      return 0
+    fi
+  fi
+  if ! usermod -aG "$group" ns; then
+    echo "没能加入 Docker 套接字的用户组，面板升级暂时不能用。"
+  fi
+}
+grant_docker_socket
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
 umask 077

@@ -43,6 +43,15 @@ from ns_panel.water import (
 from ns_panel.nodeseek import NodeSeekClient
 from ns_panel.pages import notification_path
 from ns_panel.server import App, create_httpd, panel_authorized
+from ns_panel.upgrade import (
+    bump_compose_image,
+    container_id_from_text,
+    is_newer,
+    parse_version,
+    replacement_spec,
+    sync_source,
+    valid_tag,
+)
 from ns_panel.watch import watch_once
 from ns_panel.store import Store
 
@@ -1715,6 +1724,172 @@ class WatchTest(unittest.TestCase):
         self.assertIn("已恢复", sent[1][2])
         self.assertNotIn("secret-token", sent[1][2])
         tmp.cleanup()
+
+
+class UpgradeTest(unittest.TestCase):
+    def test_version_compare(self):
+        self.assertEqual(parse_version("v0.7.10"), (0, 7, 10))
+        self.assertTrue(is_newer("0.7.10", "0.7.9"))
+        self.assertTrue(is_newer("v0.8.0", "0.7.9"))
+        self.assertFalse(is_newer("0.7.9", "0.7.9"))
+        self.assertFalse(is_newer("0.7.8", "0.7.9"))
+        self.assertFalse(is_newer("latest", "0.7.9"))
+        self.assertTrue(valid_tag("v0.7.9"))
+        self.assertFalse(valid_tag("0.7.9"))
+        self.assertFalse(valid_tag("v1"))
+        self.assertEqual(container_id_from_text("0::/docker/abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd"), "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd")
+
+    def test_compose_image_bump_leaves_ports_and_passwords(self):
+        text = "\n".join([
+            "services:",
+            "  nodeseek-pm:",
+            "    image: nodeseek-pm:0.7.9",
+            "    environment:",
+            "      NS_PANEL_PASSWORD: keep-me",
+            "    ports:",
+            '      - "127.0.0.1:8789:8787"',
+            "  nodeseek-watch:",
+            '    image: "nodeseek-pm:0.7.9"',
+            "    image: redis:7",
+            "    container_name: nodeseek-pm",
+            "",
+        ])
+        out = bump_compose_image(text, "nodeseek-pm:0.8.0")
+        self.assertIn("image: nodeseek-pm:0.8.0", out)
+        self.assertIn('image: "nodeseek-pm:0.8.0"', out)
+        self.assertNotIn("0.7.9", out)
+        self.assertIn("keep-me", out)
+        self.assertIn("8789:8787", out)
+        self.assertIn("image: redis:7", out)
+        self.assertIn("container_name: nodeseek-pm", out)
+        self.assertEqual(bump_compose_image(text, "redis:7"), text)
+
+    def test_source_copy_skips_compose_and_data(self):
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name) / "src"
+        dest = Path(tmp.name) / "compose"
+        (root / "ns_panel").mkdir(parents=True)
+        (root / "ns_panel" / "x.py").write_text("print(1)\n", encoding="utf-8")
+        (root / "data").mkdir()
+        (root / "data" / "panel.db").write_text("secret", encoding="utf-8")
+        (root / "docker-compose.yml").write_text("ports: keep\nNS_PANEL_PASSWORD: secret\n", encoding="utf-8")
+        (root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        sync_source(root, dest)
+        self.assertEqual((dest / "ns_panel" / "x.py").read_text(encoding="utf-8"), "print(1)\n")
+        self.assertTrue((dest / "Dockerfile").is_file())
+        self.assertFalse((dest / "docker-compose.yml").exists())
+        self.assertFalse((dest / "data").exists())
+        tmp.cleanup()
+
+    def test_replacement_keeps_runtime_config_and_changes_image(self):
+        info = {
+            "Id": "abc123abc123abc123",
+            "Config": {
+                "Env": ["NS_PANEL_PASSWORD=secret", "NS_PORT=8787"],
+                "Cmd": ["python", "app.py"],
+                "Entrypoint": ["/entrypoint.sh"],
+                "Labels": {"com.docker.compose.project": "nodeseek-pm"},
+                "WorkingDir": "/app",
+                "User": "",
+                "ExposedPorts": {"8787/tcp": {}},
+            },
+            "HostConfig": {
+                "Binds": ["./data:/app/data", "/var/run/docker.sock:/var/run/docker.sock"],
+                "PortBindings": {"8787/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8789"}]},
+                "RestartPolicy": {"Name": "unless-stopped"},
+                "ShmSize": 1073741824,
+                "SecurityOpt": ["seccomp:unconfined"],
+                "Extra": "drop-me",
+            },
+            "NetworkSettings": {
+                "Networks": {
+                    "nodeseek-pm_default": {
+                        "Aliases": ["nodeseek-pm", "abc123abc123", "abc123abc123abc123"],
+                    }
+                }
+            },
+        }
+        spec = replacement_spec(info, "nodeseek-pm:0.8.0")
+        self.assertEqual(spec["Image"], "nodeseek-pm:0.8.0")
+        self.assertEqual(spec["Env"], ["NS_PANEL_PASSWORD=secret", "NS_PORT=8787"])
+        self.assertEqual(spec["Entrypoint"], ["/entrypoint.sh"])
+        self.assertEqual(spec["HostConfig"]["PortBindings"]["8787/tcp"][0]["HostPort"], "8789")
+        self.assertIn("/var/run/docker.sock:/var/run/docker.sock", spec["HostConfig"]["Binds"])
+        self.assertNotIn("Extra", spec["HostConfig"])
+        self.assertEqual(spec["NetworkingConfig"]["EndpointsConfig"]["nodeseek-pm_default"]["Aliases"], ["nodeseek-pm"])
+
+    def test_page_has_upgrade_button(self):
+        html = (Path(__file__).resolve().parent.parent / "ns_panel" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="upgrade-btn"', html)
+        self.assertIn('type="button"', html[html.find('id="upgrade-btn"') - 40:html.find('id="upgrade-btn"')])
+
+    def test_upgrade_api_does_not_touch_network_without_socket(self):
+        tmp = tempfile.TemporaryDirectory()
+        saved = {
+            key: os.environ.get(key)
+            for key in ("NS_RUNTIME", "NS_DOCKER_SOCK", "NS_PANEL_USER", "NS_PANEL_PASSWORD")
+        }
+        os.environ["NS_RUNTIME"] = "docker"
+        os.environ["NS_DOCKER_SOCK"] = str(Path(tmp.name) / "missing.sock")
+        os.environ.pop("NS_PANEL_USER", None)
+        os.environ.pop("NS_PANEL_PASSWORD", None)
+        import ns_panel.upgrade as upgrade_api
+
+        calls = []
+
+        def fake_latest():
+            calls.append("fetch")
+            return {"tag": "v9.9.9", "version": "9.9.9", "url": "https://example.test/v9.9.9"}
+
+        original_fetch = upgrade_api.fetch_latest
+        original_open = urllib.request.urlopen
+
+        def guarded_open(url, *args, **kwargs):
+            target = getattr(url, "full_url", str(url))
+            if "github.com" in target:
+                raise AssertionError("should not touch the network")
+            return original_open(url, *args, **kwargs)
+
+        upgrade_api.fetch_latest = fake_latest
+        urllib.request.urlopen = guarded_open
+        app = App(Path(tmp.name))
+        httpd = create_httpd(app, "127.0.0.1", 0)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        host, port = httpd.server_address
+        base = f"http://{host}:{port}"
+        try:
+            with urllib.request.urlopen(base + "/api/upgrade") as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["latest"], "9.9.9")
+            self.assertTrue(payload["update"])
+            self.assertFalse(payload["ready"])
+            self.assertEqual(calls, ["fetch"])
+            request = urllib.request.Request(
+                base + "/api/upgrade",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                urllib.request.urlopen(request)
+                self.fail("expected 400")
+            except urllib.error.HTTPError as exc:
+                body = json.loads(exc.read().decode("utf-8"))
+                self.assertEqual(exc.code, 400)
+                self.assertIn("docker.sock", body["error"])
+            self.assertEqual(calls, ["fetch"])
+        finally:
+            upgrade_api.fetch_latest = original_fetch
+            urllib.request.urlopen = original_open
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            httpd.shutdown()
+            httpd.server_close()
+            tmp.cleanup()
 
 
 if __name__ == "__main__":

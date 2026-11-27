@@ -4,7 +4,7 @@ const titles = {
   mentions: ["提到我", "有人在帖子里@你时，列出来并推送到 Telegram。"],
   replies: ["回复我", "有人回复你的帖子时，列出来并推送到 Telegram。"],
   keywords: ["关键词", "新帖标题或摘要里出现关键词时，列出来并推送到 Telegram。"],
-  settings: ["设置", "面板账号、登录浏览器、Telegram，以及检查间隔。"],
+  settings: ["设置", "面板账号、登录浏览器、Telegram、检查间隔，以及升级。"],
   logs: ["日志", "本机运行记录，不会上传。"],
 };
 
@@ -92,6 +92,7 @@ function showPage(name) {
   if (page === "keywords") loadPosts();
   if (page === "mentions") loadMentions();
   if (page === "replies") loadReplies();
+  if (page === "settings") loadUpgrade().catch((error) => toast(error.message, "err"));
 }
 
 function renderStatus(data) {
@@ -429,7 +430,10 @@ async function withButton(button, work) {
     }
     if (button.id === "start-btn") button.disabled = Boolean(status && status.running);
     else if (button.id === "stop-btn") button.disabled = !status || !status.running;
-    else button.disabled = false;
+    else if (button.id === "upgrade-check-btn") {
+      const upgradeStatus = $("#upgrade-status");
+      button.disabled = Boolean(upgradeStatus && upgradeStatus.dataset.busy === "1");
+    } else if (button.id !== "upgrade-btn") button.disabled = false;
   }
 }
 
@@ -614,6 +618,44 @@ $("#posts-baseline-btn").addEventListener("click", () => withButton($("#posts-ba
   await loadPosts();
 }));
 
+$("#upgrade-check-btn").addEventListener("click", () => withButton($("#upgrade-check-btn"), async () => {
+  await loadUpgrade();
+  toast("已检查更新");
+}));
+
+$("#upgrade-btn").addEventListener("click", async () => {
+  const button = $("#upgrade-btn");
+  if (button.disabled) return;
+  if (!confirm("升级会重启这一套面板一两分钟。端口、密码和登录数据不会改。继续吗？")) return;
+  button.disabled = true;
+  try {
+    const result = await post("/api/upgrade", {});
+    toast(result.message || "升级已开始");
+    await loadUpgrade();
+  } catch (error) {
+    toast(error.message || "升级失败", "err");
+    await loadUpgrade().catch(() => {});
+  }
+});
+
+async function loadUpgrade() {
+  const data = await api("/api/upgrade");
+  const statusEl = $("#upgrade-status");
+  const busy = data.state === "running" || data.state === "restarting";
+  if (statusEl) {
+    const versions = data.latest ? `当前 ${data.current}，最新 ${data.latest}。` : `当前 ${data.current}。`;
+    statusEl.textContent = `${versions}${data.message || ""}`;
+    statusEl.dataset.busy = busy ? "1" : "";
+  }
+  const button = $("#upgrade-btn");
+  if (button) {
+    button.disabled = busy || !data.ready || !data.update;
+    button.textContent = busy ? "正在升级" : "升级";
+  }
+  const check = $("#upgrade-check-btn");
+  if (check) check.disabled = busy;
+}
+
 $("#reload-logs-btn").addEventListener("click", () => loadLogs().catch((error) => toast(error.message, "err")));
 
 window.addEventListener("hashchange", () => showPage(location.hash.replace("#", "")));
@@ -630,4 +672,6 @@ setInterval(() => {
   if (page === "keywords") loadPosts().catch(() => {});
   if (page === "mentions") loadMentions().catch(() => {});
   if (page === "replies") loadReplies().catch(() => {});
+  const upgradeStatus = $("#upgrade-status");
+  if (page === "settings" && upgradeStatus && upgradeStatus.dataset.busy === "1") loadUpgrade().catch(() => {});
 }, 3000);

@@ -2,7 +2,7 @@
 services:
   nodeseek-pm:
     build: .
-    image: nodeseek-pm:0.7.9
+    image: nodeseek-pm:0.7.10
     container_name: nodeseek-pm
     restart: unless-stopped
     init: true
@@ -18,18 +18,23 @@ services:
       NS_PANEL_USER: admin
       NS_PANEL_PASSWORD: change-me
       VNC_PASSWORD: change12
+      NS_COMPOSE_DIR: /compose
     ports:
       - "127.0.0.1:8787:8787"
       - "127.0.0.1:6080:6080"
+    # 升级按钮要用 Docker 套接字和这份编排目录。已有服务器要手写加一次，拉取代码不会改编排文件。
+    # 看门狗不要加这个套接字。
     volumes:
       - ./data:/app/data
       - ./browser-data:/browser-data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/compose
 
   # 面板容器自己挂了就发不出每日存活消息。这个服务在外面看 /health。
   # 整台机器关机时它也发不出。已有服务器要手写加一次，拉取代码不会改编排文件。
   nodeseek-watch:
     build: .
-    image: nodeseek-pm:0.7.9
+    image: nodeseek-pm:0.7.10
     container_name: nodeseek-watch
     restart: unless-stopped
     init: true

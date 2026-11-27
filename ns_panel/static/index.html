@@ -200,6 +200,15 @@
             </div>
           </section>
         </form>
+        <section class="panel section-gap" id="upgrade-panel">
+          <h2>升级</h2>
+          <p class="muted note">从 GitHub 下载新版本，在这台机器上构建镜像，然后重启这一套容器。不会从 Docker Hub 拉取，也不会改端口、密码和登录数据。</p>
+          <p id="upgrade-status" class="muted">打开这一页时会检查有没有新版本。</p>
+          <div class="actions">
+            <button type="button" id="upgrade-check-btn">检查更新</button>
+            <button type="button" id="upgrade-btn" class="primary" disabled>升级</button>
+          </div>
+        </section>
         <form id="settings-form" class="stack">
           <div class="actions form-start">
             <button type="submit" class="primary">保存设置</button>

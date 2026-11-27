@@ -211,6 +211,7 @@ textarea { resize: vertical; font-family: Consolas, "Cascadia Mono", monospace; 
 .steps li + li { margin-top: 4px; }
 
 .section-gap { margin-top: 18px; }
+#upgrade-panel { margin-bottom: 16px; }
 
 .checkline {
   display: flex;
